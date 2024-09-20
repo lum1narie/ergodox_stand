@@ -154,7 +154,7 @@ fn fulcrums_points() -> Vec<na::Vector3<f64>> {
         na::Vector3::new(0., -FULCRUM_Y_ON_ERGODOX, 0.),
         na::Vector3::new(158.0 * 0.3, -120.0, 0.), // TODO:
         na::Vector3::new(FULCRUM_X_ON_ERGODOX, -FULCRUM_Y_ON_ERGODOX, 0.),
-        na::Vector3::new(FULCRUM_X_ON_ERGODOX, 0., 0.),
+        na::Vector3::new(FULCRUM_X_ON_ERGODOX * 0.7, 0., 0.),
     ];
 
     // rotate the points
