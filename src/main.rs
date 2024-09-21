@@ -1,7 +1,5 @@
 mod algebra;
 
-use crate::algebra::min_spanning_by_prim;
-
 use std::fs::create_dir;
 
 use itertools::iproduct;
@@ -209,17 +207,30 @@ fn ergodox_stand_left() -> Scad {
     // base plate
     let base = {
         // base points to connect
-        let base_points: Vec<na::Vector2<f64>> = vec![
-            vec![na::Vector2::new(0., 0.)],
-            fulcrums_points()
-                .into_iter()
-                .map(|p| na::Vector2::new(p.x, p.y))
-                .collect(),
-        ]
-        .concat();
+        let base_points: Vec<na::Vector2<f64>> = {
+            // base of supports
+            let ps = vec![
+                vec![na::Vector2::new(0., 0.)],
+                fulcrums_points()
+                    .into_iter()
+                    .map(|p| na::Vector2::new(p.x, p.y))
+                    .collect(),
+            ]
+            .concat();
 
-        // edges of the spanning tree to connect all of `base_points`
-        let base_edges: Vec<[na::Vector2<f64>; 2]> = min_spanning_by_prim(&base_points);
+            vec![
+                ps.clone(),
+                // the weighted average of the `ps`
+                vec![ps.iter().fold(na::Vector2::zeros(), |a, b| a + b) / (ps.len() as f64)],
+            ]
+            .concat()
+            // ps
+        };
+        dbg!(&base_points);
+
+        // edges of the base to connect all of `base_points` with triangle
+        let base_edges: Vec<[na::Vector2<f64>; 2]> =
+            algebra::small_triangular_spanning(&base_points);
 
         Scad {
             op: ScadOp::Union,
@@ -284,4 +295,7 @@ fn main() {
     let _ = create_dir("things");
     el.save("things/ergodox_stand_left.scad");
     er.save("things/ergodox_stand_right.scad");
+
+    let tri_test = algebra::test::test_small_triangular_spanning(30).unwrap();
+    tri_test.save("things/tri_test.scad");
 }
