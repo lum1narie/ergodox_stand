@@ -184,11 +184,32 @@ impl TriangleSpanningCalculator {
         };
     }
 
+    /// Sort the indices to be [`EdgeIndex`]
+    ///
+    /// # Arguments
+    ///
+    /// - `x`: index 0
+    /// - `y`: index 1
+    ///
+    /// # Returns
+    ///
+    /// - `[min(x, y), max(x, y)]`
     #[inline]
     fn sort_to_edge(x: usize, y: usize) -> EdgeIndex {
         [min(x, y), max(x, y)]
     }
 
+    /// Sort the indices to be [`TriangleIndex`]
+    ///
+    /// # Arguments
+    ///
+    /// - `x`: index 0
+    /// - `y`: index 1
+    /// - `z`: index 2
+    ///
+    /// # Returns
+    ///
+    /// - `[v0, v1, v2]`: `v0` < `v1` < `v2`
     #[inline]
     fn sort_to_triangle(x: usize, y: usize, z: usize) -> TriangleIndex {
         let mut v = vec![x, y, z];
@@ -342,6 +363,15 @@ impl TriangleSpanningCalculator {
         }
     }
 
+    /// Get the number of triangles that have given edge.
+    ///
+    /// # Arguments
+    ///
+    /// - `e`: edge
+    ///
+    /// # Returns
+    ///
+    /// - number of triangles that have the edge
     #[inline]
     fn get_triangle_num_with_edge(&self, e: &EdgeIndex) -> usize {
         self.triangles_in_graphs_on_edges
@@ -349,6 +379,17 @@ impl TriangleSpanningCalculator {
             .map_or(0, |ts| ts.len())
     }
 
+    /// Get the value from array if the predicate is true.
+    ///
+    /// # Arguments
+    ///
+    /// - `arr`: array with 2 values
+    /// - `f`: predicate
+    ///
+    /// # Returns
+    ///
+    /// - [`Some<T>`]: value in array that `f(value)` is true,  if the predicate is true for only one value.
+    /// - [`None`]: if predicate is same result for both value
     #[inline]
     fn filter_from_two<T, F>(arr: [T; 2], f: F) -> Option<T>
     where
@@ -362,17 +403,36 @@ impl TriangleSpanningCalculator {
         }
     }
 
-    fn select_new_edge_for_open_triangle_with_an_open_edge(
+    /// Select the new edge when the edge to delete is open edge,
+    /// and the triangle with the edge has one more open edge. 
+    ///
+    /// This is the situation as below that a -- b is the edge to delete.
+    /// All edges in a -- b -- c -- d is open edge, and c -- d is closed edge.
+    /// This function select b -- d.
+    ///
+    /// ```
+    /// a─b
+    ///  ╲│
+    ///   c─d
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: Edge to delete, a -- b in figure.
+    /// - `open_edge_adj`: The adjacent open edge in `edge_del`, b -- c in figure.
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(EdgeIndex)`]: The new edge to connect. b -- d in figure.
+    /// - [`None`]: If candidate is longer than `edge_del`.
+    fn select_new_edge_for_triangle_with_1_open_edge(
         &self,
         edge_del: &EdgeIndex,
         open_edge_adj: &EdgeIndex,
     ) -> Option<EdgeIndex> {
-        // If the open edges are connected as a -- b -- c -- d,
-        // and a -- c are also directly connected,
-        // then remove the edge a -- b and connect b -- d.
         let candidate: EdgeIndex = {
-            // pivot: point in `open_edges_adj`, not in `edge_del`
-            // v: the other point in `open_edges_adj`
+            // pivot: point in `open_edges_adj`, not in `edge_del`, c in figure.
+            // v: the other point in `open_edges_adj`, b in figure.
             let (pivot, v): (usize, usize) = if edge_del.contains(&open_edge_adj[0]) {
                 (open_edge_adj[1], open_edge_adj[0])
             } else {
@@ -390,6 +450,7 @@ impl TriangleSpanningCalculator {
                 })
                 .unwrap()
         };
+
         // cannot connect if candidate is longer than `edge_del`
         if self.edge_lengths[candidate[0]][candidate[1]]
             >= self.edge_lengths[edge_del[0]][edge_del[1]]
@@ -399,6 +460,22 @@ impl TriangleSpanningCalculator {
         Some(candidate)
     }
 
+    /// Find adjacent vertex with same side.
+    ///
+    /// See [`select_new_edge_for_open_triangle_without_open_edge()`].
+    ///
+    /// This function find one of c, d that connected with a in figure, when c -- d is cut.
+    ///
+    /// # Arguments
+    ///
+    /// - `pivot`: central vertex
+    /// - `adj_vs_open`: the 2 vertices connected with `pivot` by the open edge. a, b in figure.
+    /// - `adj_vs_closed`: the 2 vertices connected with `pivot` by the closed edge.
+    ///   c, d in figure.
+    ///
+    /// # Returns
+    ///
+    /// - One of the `adj_vs_closed` in same side of `adj_vs_open[0]`
     fn walk_to_find_adjacent_vertex_with_same_side(
         &self,
         pivot: usize,
@@ -433,17 +510,20 @@ impl TriangleSpanningCalculator {
     /// partition the 4 vertices connected with it to 2 groups made of 2 verticies by position
     /// by using adjacent points' data precalculated.
     ///
+    /// See [`select_new_edge_for_open_triangle_without_open_edge()`].
+    ///
     /// # Arguments
     ///
     /// - `pivot`: The vertex connected with 2 open edges and 2 closed edges
-    /// - `adj_vs_open`: The 2 vertices connected with `pivot` by the open edge
-    /// - `adj_vs_closed`: The 2 vertices connected with `pivot` by the closed edge
+    /// - `adj_vs_open`: The 2 vertices connected with `pivot` by the open edge. a, b in figure.
+    /// - `adj_vs_closed`: The 2 vertices connected with `pivot` by the closed edge.
+    ///   c, d in figure.
     ///
     /// # Returns
     ///
-    /// - `(a, b)`
-    ///   - `a`: The 2 vertices in the same side
-    ///   - `b`: The 2 vertices in the other side
+    /// - `(x, y)`
+    ///   - `x`: The 2 vertices in the same side
+    ///   - `y`: The 2 vertices in the other side
     fn partition_vertices_by_position_with_adj_data(
         &self,
         pivot: usize,
@@ -451,24 +531,26 @@ impl TriangleSpanningCalculator {
         adj_vs_closed: [usize; 2],
     ) -> ([usize; 2], [usize; 2]) {
         // adjacent vertices in same side when remove `edge_del`
-        let a: [usize; 2] = {
+        let x: [usize; 2] = {
             [
                 adj_vs_open[0],
                 self.walk_to_find_adjacent_vertex_with_same_side(pivot, adj_vs_open, adj_vs_closed),
             ]
         };
 
-        // the other vertices not `a`
-        let b: [usize; 2] = [
-            Self::filter_from_two(adj_vs_open, |&x| !a.contains(&x)).unwrap(),
-            Self::filter_from_two(adj_vs_closed, |&x| !a.contains(&x)).unwrap(),
+        // the other vertices not `x`
+        let y: [usize; 2] = [
+            Self::filter_from_two(adj_vs_open, |&v| !x.contains(&v)).unwrap(),
+            Self::filter_from_two(adj_vs_closed, |&v| !x.contains(&v)).unwrap(),
         ];
-        (a, b)
+        (x, y)
     }
 
     /// Let `pivot` is the vertex in the triangle with the edge to delete, but not in the edge.
     /// `pivot` is connected with 2 open edges and 2 closed edges.
     /// Partition the 4 vertices connected with it to 2 groups made of 2 verticies by position.
+    ///
+    /// See [`select_new_edge_for_open_triangle_without_open_edge()`].
     ///
     /// # Arguments
     ///
@@ -487,7 +569,7 @@ impl TriangleSpanningCalculator {
         let pivot: usize =
             Self::filter_from_two(closed_edges_adj[0], |&x| closed_edges_adj[1].contains(&x))
                 .unwrap();
-        // adjacent vertices of `pivot`, with open edge between `pivot`
+        // adjacent vertices of `pivot`, with open edge between `pivot`. a, b in figure.
         let adj_vs_open: [usize; 2] = (0..self.n)
             .filter(|&i| {
                 let e: EdgeIndex = Self::sort_to_edge(i, pivot);
@@ -496,7 +578,7 @@ impl TriangleSpanningCalculator {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        // adjacent vertices of `pivot`, with closed edge between `pivot`
+        // adjacent vertices of `pivot`, with closed edge between `pivot`. c, d in figure.
         let adj_vs_closed: [usize; 2] = [
             Self::filter_from_two(closed_edges_adj[0], |&x| x != pivot).unwrap(),
             Self::filter_from_two(closed_edges_adj[1], |&x| x != pivot).unwrap(),
@@ -505,23 +587,38 @@ impl TriangleSpanningCalculator {
         self.partition_vertices_by_position_with_adj_data(pivot, adj_vs_open, adj_vs_closed)
     }
 
-    fn select_new_edge_for_open_triangle_without_open_edge(
+    /// Select the new edge when the edge to delete is open edge,
+    /// and the triangle with the edge has no other open edge. 
+    /// 
+    /// This is the situation as below that c -- d is the edge to delete.
+    /// `p` is pivot and a -- p, b -- p is open edges, while c -- p, d -- p is closed edges.
+    /// When c -- d is cut, one of c, d is connected with a, and the other is connected with b.
+    /// Let `x`, `y` to be These connection groups.
+    /// `x` is [a, (one of c, d)] and `y` is [b, (the other one of c, d)].
+    /// This function selects each one vertex from `x` and `y`
+    /// to be shortest metric distance.
+    /// ```
+    ///  a b
+    /// ┌┴─┴┐
+    /// │ p │
+    /// └┬─┬┘
+    ///  c─d
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete, c -- d in figure.
+    /// - `closed_edges_adj`: The 2 vertices connected with the `edge_del`, p -- c and p -- d in figure.
+    ///
+    /// # Returns
+    ///
+    /// - `[Some(EdgeIndex)]`: The new edge to connect. This is (one of `x`) -- (one of `y`).
+    /// - `[None]`: If `edge_del` is already the shortest edge between `x` and `y`.
+    fn select_new_edge_for_triangle_without_open_edge(
         &self,
         edge_del: &EdgeIndex,
         closed_edges_adj: [EdgeIndex; 2],
     ) -> Option<EdgeIndex> {
-        // if c -- d is `edge_del`, then connection is as below.
-        // `p` is pivot and a -- p, b -- p is open edges.
-        // when c -- d is cut, one of c, d is connected with a, and the other is connected with b.
-        // in this function, select one vertex from each connection group
-        // to be shortest metric distance then connect them.
-        // ```
-        //  a b
-        // ┌┴─┴┐
-        // │ p │
-        // └┬─┬┘
-        //  c─d
-        //  ```
         let candidate: EdgeIndex = {
             let (x, y): ([usize; 2], [usize; 2]) =
                 self.partition_vertices_by_position(closed_edges_adj);
@@ -538,7 +635,7 @@ impl TriangleSpanningCalculator {
                 .unwrap()
         };
 
-        // If `edge_del` is already the longest edge between `x` and `y`,
+        // If `edge_del` is already the shortest edge between `x` and `y`,
         // it cannot be connected.
         if candidate == *edge_del {
             return None;
@@ -546,7 +643,18 @@ impl TriangleSpanningCalculator {
         Some(candidate)
     }
 
-    fn select_new_edge_for_open_triangle(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
+    
+    /// Select the new edge when the edge to delete is open edge.
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(EdgeIndex)`]: The new edge to connect.
+    /// - [`None`]: If no shorter edge can connect when `edge_del` is deleted.
+    fn select_new_edge_for_open_edge(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
         // remaining edges in triangle with `edge_del`, classified by open-closed
         let (open_edges_adj, closed_edges_adj): (Vec<EdgeIndex>, Vec<EdgeIndex>) = {
             assert_eq!(
@@ -572,29 +680,39 @@ impl TriangleSpanningCalculator {
 
         if open_edges_adj.len() == 1 {
             debug_eprintln!("open-oc");
-            self.select_new_edge_for_open_triangle_with_an_open_edge(edge_del, &open_edges_adj[0])
+            self.select_new_edge_for_triangle_with_1_open_edge(edge_del, &open_edges_adj[0])
         } else {
             // when no more open edges is in the triangle
             debug_eprintln!("open-cc");
-            self.select_new_edge_for_open_triangle_without_open_edge(
+            self.select_new_edge_for_triangle_without_open_edge(
                 edge_del,
                 closed_edges_adj.try_into().unwrap(),
             )
         }
     }
 
-    fn select_new_edge_for_closed_triangle(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
-        // When `edge_del` is x -- y,
-        // and graph is connected as below,
-        // the remove x -- y and connect a -- b.
-        //
-        // ```
-        // ┌──a──┐
-        // │     │
-        // x─────y
-        // │     │
-        // └──b──┘
-        // ```
+    /// Select the new edge when the edge to delete is closed edge.
+    ///
+    /// This is the situation as below that x -- y is the edge to delete.
+    /// This function selects a -- b.
+    /// a -- b is maybe connected. If a -- b is connected, this function selects nothing.
+    ///
+    /// ```
+    /// ┌a┐
+    /// x─y
+    /// └b┘
+    /// ```
+    /// 
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(EdgeIndex)`]: The new edge to connect.
+    /// - [`None`]: If the candidate is longer than `edge_del`,
+    ///   or the candidate is already connected.
+    fn select_new_edge_for_closed_edge(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
 
         // vertices connected with the ends of `edge_del`
         let vs: Vec<usize> = self.triangles_in_graphs_on_edges[edge_del]
@@ -618,6 +736,11 @@ impl TriangleSpanningCalculator {
         Some(e)
     }
 
+    /// Remove triangles that contains `edge_del`
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
     fn remove_triangles_with_edge(&mut self, edge_del: &EdgeIndex) {
         for t in self.triangles_in_graphs_on_edges[edge_del].clone() {
             for e in &enumerate_edges(&t) {
@@ -634,6 +757,11 @@ impl TriangleSpanningCalculator {
         self.triangles_in_graphs_on_edges.remove(edge_del);
     }
 
+    /// Add triangles that contains `edge_add`
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_add`: The edge to add
     fn add_triangle_with_edge(&mut self, edge_add: &EdgeIndex) {
         for i in 0..self.n {
             let e1: EdgeIndex = Self::sort_to_edge(i, edge_add[0]);
@@ -660,11 +788,24 @@ impl TriangleSpanningCalculator {
         }
     }
 
+    /// Add triangles that contains `edge_add`
+    /// and remove triangles that contains `edge_del`.
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    /// - `edge_add`: The edge to add
     fn refresh_triangles(&mut self, edge_del: &EdgeIndex, edge_add: &EdgeIndex) {
         self.remove_triangles_with_edge(edge_del);
         self.add_triangle_with_edge(edge_add);
     }
 
+    /// Add and remove the edge and refresh the graph state.
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    /// - `edge_add`: The edge to add
     fn refresh_edges(&mut self, edge_del: &EdgeIndex, edge_add: &EdgeIndex) {
         // swap edges
         self.graph.retain(|e| e != edge_del);
@@ -699,10 +840,10 @@ impl TriangleSpanningCalculator {
                 // if `edge_del` is open triangle or not
                 let is_open = self.get_triangle_num_with_edge(edge_del) == 1;
                 if is_open {
-                    self.select_new_edge_for_open_triangle(edge_del)
+                    self.select_new_edge_for_open_edge(edge_del)
                 } else {
                     debug_eprintln!("closed");
-                    self.select_new_edge_for_closed_triangle(edge_del)
+                    self.select_new_edge_for_closed_edge(edge_del)
                 }
             };
             if let Some(edge_add) = maybe_edge_add {
@@ -813,6 +954,16 @@ pub(crate) mod test {
             .collect::<Vec<_>>()
     }
 
+    /// Generate test object showing the graph.
+    ///
+    /// # Arguments
+    ///
+    /// - `points`: vertices of the graph
+    /// - `edges`: edges of the graph
+    ///
+    /// # Returns
+    ///
+    /// - [`Scad`]: the object
     fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> Scad {
         // pillars on the points
         let pillars = points.into_iter().map(|p| {
