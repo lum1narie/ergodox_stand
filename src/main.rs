@@ -25,6 +25,8 @@ const BASE_HEIGHT: f64 = 10.;
 const CORNER_SUPPORT_THICKNESS: f64 = 7.;
 const CORNER_SUPPORT_SIZE: f64 = 25.;
 
+const SMALL: f64 = 0.001;
+
 /// Generate the rotation matrix of the upper vector
 ///
 /// # Returns
@@ -56,7 +58,7 @@ fn euler_angle_degrees(r: &na::Rotation3<f64>) -> [f64; 3] {
 ///
 /// Basic shape of the Ergodox
 #[inline]
-fn ergodox_shape(height: f64) -> Scad {
+pub fn ergodox_shape(height: f64) -> Scad {
     mirror!(
         [0.,1.,0.],
         union!(
@@ -75,6 +77,19 @@ fn ergodox_shape(height: f64) -> Scad {
                 );
             );
         );
+    )
+}
+
+/// Generate the shape of the top corner foot of Ergodox EZ
+///
+/// # Returns
+///
+/// Shape of the top corner foot
+#[inline]
+fn ergodox_top_corner_foot_shape() -> Scad {
+    translate! (
+        [17., -17.5, -3.],
+        cylinder!(h=3. + SMALL, d=10.);
     )
 }
 
@@ -143,6 +158,7 @@ fn top_corner_support_filled() -> Scad {
 /// # Returns
 ///
 /// Tip points of the fulcrums
+#[inline]
 fn fulcrums_points() -> Vec<na::Vector3<f64>> {
     let rot_matrix = rot_matrix();
 
@@ -166,6 +182,7 @@ fn fulcrums_points() -> Vec<na::Vector3<f64>> {
 /// # Returns
 ///
 /// Fulcrums
+#[inline]
 fn fulcrums() -> Vec<Scad> {
     fulcrums_points()
         .into_iter()
@@ -186,19 +203,60 @@ fn fulcrums() -> Vec<Scad> {
         .collect()
 }
 
+/// Generate the edges to connect the points
+///
+/// # Parameters
+///
+/// `points` - The points to connect
+///
+/// # Returns
+///
+/// [`Vec<Scad>`] include edges to connect the points
+#[inline]
+fn connect_points(points: &Vec<na::Vector2<f64>>) -> Vec<Scad> {
+    // edges to connect all of `points` with triangle
+    let edges: Vec<[na::Vector2<f64>; 2]> = algebra::small_triangular_spanning(&points);
+
+    edges
+        .into_iter()
+        .map(|[p1, p2]| {
+            // connecting edge between the two points
+            hull!(
+                linear_extrude!(
+                    BOTTOM_PLATE_HEIGHT,
+                    translate!(
+                        [p1.x, p1.y, 0.],
+                        circle!(d=BOTTOM_PLATE_SIZE);
+                    );
+                );
+                linear_extrude!(
+                    BOTTOM_PLATE_HEIGHT,
+                    translate!(
+                        [p2.x, p2.y, 0.],
+                        circle!(d=BOTTOM_PLATE_SIZE);
+                    );
+                );
+            )
+        })
+        .collect()
+}
+
 /// Generate the Ergodox stand for the left hand
 ///
 /// # Returns
 ///
 /// Ergodox stand for the left hand
-fn ergodox_stand_left() -> Scad {
+pub fn ergodox_stand_left() -> Scad {
     let rot_matrix = rot_matrix();
     let [rot_x, rot_y, rot_z] = euler_angle_degrees(&rot_matrix);
 
     // shape of the Ergodox to cut the stand
     let ergodox_rotated = rotate!(
         [rot_x, rot_y, rot_z],
-        ergodox_shape(100.);
+        union! (
+            ergodox_shape(100.);
+            ergodox_top_corner_foot_shape();
+        );
     );
 
     // supporting shapes
@@ -226,36 +284,12 @@ fn ergodox_stand_left() -> Scad {
             .concat()
             // ps
         };
-        dbg!(&base_points);
 
-        // edges of the base to connect all of `base_points` with triangle
-        let base_edges: Vec<[na::Vector2<f64>; 2]> =
-            algebra::small_triangular_spanning(&base_points);
+        let base_objs: Vec<Scad> = connect_points(&base_points);
 
         Scad {
             op: ScadOp::Union,
-            children: base_edges
-                .into_iter()
-                .map(|[p1, p2]| {
-                    // connecting edge between the two points
-                    hull!(
-                        linear_extrude!(
-                            BOTTOM_PLATE_HEIGHT,
-                            translate!(
-                                [p1.x, p1.y, 0.],
-                                circle!(d=BOTTOM_PLATE_SIZE);
-                            );
-                        );
-                        linear_extrude!(
-                            BOTTOM_PLATE_HEIGHT,
-                            translate!(
-                                [p2.x, p2.y, 0.],
-                                circle!(d=BOTTOM_PLATE_SIZE);
-                            );
-                        );
-                    )
-                })
-                .collect(),
+            children: base_objs,
         }
     };
 

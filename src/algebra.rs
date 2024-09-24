@@ -9,6 +9,18 @@ use itertools::Itertools;
 use nalgebra as na;
 use ordered_float::OrderedFloat;
 
+macro_rules! debug_eprintln {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        eprintln!($($arg)*);
+    }
+}
+
+pub type EdgeIndex = [usize; 2];
+pub type Edge = [na::Vector2<f64>; 2];
+pub type TriangleIndex = [usize; 3];
+pub type Triangle = [na::Vector2<f64>; 3];
+
 /// Calculates the minimum spanning tree by Prim's algorithm
 ///
 /// # Arguments
@@ -19,24 +31,24 @@ use ordered_float::OrderedFloat;
 ///
 /// Minimum spanning tree `vec![[p0, p1], ...]`,
 /// which is consisted by the edges (p0, p1), ...
-pub fn min_spanning_by_prim(points: &Vec<na::Vector2<f64>>) -> Vec<[na::Vector2<f64>; 2]> {
+pub fn min_spanning_by_prim(points: &Vec<na::Vector2<f64>>) -> Vec<Edge> {
     if points.is_empty() {
         return Vec::new();
     }
 
     // calculate the edge length
-    let edges: Vec<Vec<f64>> = points
+    let edge_lengths: Vec<Vec<f64>> = points
         .iter()
         .map(|p1| points.iter().map(|p2| p1.metric_distance(&p2)).collect())
         .collect();
 
     // indicies of the edges in the spanning tree
-    let mut graph: Vec<[usize; 2]> = Vec::new();
+    let mut graph: Vec<EdgeIndex> = Vec::new();
 
     // visited vertices
-    let mut visited = HashSet::from([0]);
+    let mut visited_verticies = HashSet::from([0]);
     // remaining edges
-    let mut heap: BinaryHeap<_> = edges[0]
+    let mut heap_edges: BinaryHeap<_> = edge_lengths[0]
         .iter()
         .enumerate()
         .skip(1)
@@ -45,18 +57,18 @@ pub fn min_spanning_by_prim(points: &Vec<na::Vector2<f64>>) -> Vec<[na::Vector2<
         })
         .collect();
 
-    while visited.len() < points.len() {
-        let Reverse((_, [i, j])) = heap.pop().unwrap();
-        if visited.contains(&j) {
+    while visited_verticies.len() < points.len() {
+        let Reverse((_, [i, j])) = heap_edges.pop().unwrap();
+        if visited_verticies.contains(&j) {
             // skip if the edge is already visited
             continue;
         }
 
         graph.push([i, j]);
-        visited.insert(j);
-        for (k, len) in edges[j].iter().enumerate() {
-            if !visited.contains(&k) {
-                heap.push(Reverse((OrderedFloat(*len), [j, k])));
+        visited_verticies.insert(j);
+        for (k, len) in edge_lengths[j].iter().enumerate() {
+            if !visited_verticies.contains(&k) {
+                heap_edges.push(Reverse((OrderedFloat(*len), [j, k])));
             }
         }
     }
@@ -68,8 +80,829 @@ pub fn min_spanning_by_prim(points: &Vec<na::Vector2<f64>>) -> Vec<[na::Vector2<
         .collect()
 }
 
-/// Find a graph that minimizes the total edge length
-/// , using a heuristic approach
+/// Enumerate edges of a triangle
+///
+/// # Arguments
+///
+/// - `triangle`: Triangle
+///
+/// # Returns
+///
+/// - `Vec<[i, j]>`: Edges in triangle
+#[inline]
+pub fn enumerate_edges(triangle: &TriangleIndex) -> Vec<EdgeIndex> {
+    triangle
+        .iter()
+        .zip(triangle.iter().cycle().skip(1))
+        .map(|(&i, &j)| [min(i, j), max(i, j)])
+        .collect()
+}
+
+/// Find a graph that minimizes the total edge length, using a heuristic approach
+/// while satisfying the following conditions:
+///
+/// - Edges are generated as follows:
+///   - From all possible combinations of 3 points on the graph,
+///     select (v-2) sets, and connect all edges of the resulting triangles.
+/// - All vertices must be connected.
+/// - Each edge can belong to a maximum of two triangles.
+///   - There are exactly two edges per vertex that belong to only one triangle.
+///     - These edges are called open edges.
+///     - Edges that belong to two triangles are called closed edges.
+/// - Note: Cases where the 3 points are collinear are not considered.
+#[derive(Default)]
+pub struct TriangleSpanningCalculator {
+    points: Vec<na::Vector2<f64>>,
+    /// points number
+    n: usize,
+    /// indicies of the edges in the spanning tree
+    graph: HashSet<EdgeIndex>,
+    /// edge length
+    edge_lengths: Vec<Vec<f64>>,
+    /// remaining all triangles with current adding cost
+    all_triangles: Vec<Rc<RefCell<(f64, TriangleIndex)>>>,
+    /// remaining all triangles with current adding cost, referrenced by edge
+    all_triangles_on_edges: HashMap<EdgeIndex, Vec<Rc<RefCell<(f64, TriangleIndex)>>>>,
+
+    /// next candidate edges; belong to only 1 triangle
+    open_edges: Vec<EdgeIndex>,
+    triangles_in_graphs_on_edges: HashMap<EdgeIndex, Vec<TriangleIndex>>,
+
+    /// `Some(answer)` if arleady calculated
+    answer: Option<Vec<Edge>>,
+}
+
+impl TriangleSpanningCalculator {
+    /// Create a new [`TriangleSpanningCalculator`]
+    ///
+    /// # Arguments
+    ///
+    /// - `points`: vertices of the graph
+    fn new(points: &Vec<na::Vector2<f64>>) -> Self {
+        let mut x = Self {
+            ..Default::default()
+        };
+        x.initialize(points);
+        x
+    }
+
+    /// Initialize the data structure for calculating
+    ///
+    /// # Arguments
+    ///
+    /// - `points`: vertices of the graph
+    fn initialize(&mut self, points: &Vec<na::Vector2<f64>>) {
+        self.points = points.clone();
+        self.n = self.points.len();
+        self.edge_lengths = self
+            .points
+            .iter()
+            .map(|p1| points.iter().map(|p2| p1.metric_distance(&p2)).collect())
+            .collect();
+
+        self.all_triangles = (0..self.n)
+            .combinations(3)
+            .map(|ps| {
+                Rc::new(RefCell::new((
+                    self.edge_lengths[ps[0]][ps[1]]
+                        + self.edge_lengths[ps[1]][ps[2]]
+                        + self.edge_lengths[ps[2]][ps[0]],
+                    [ps[0], ps[1], ps[2]],
+                )))
+            })
+            .collect();
+
+        self.all_triangles_on_edges = {
+            let mut m: HashMap<EdgeIndex, Vec<Rc<RefCell<(f64, TriangleIndex)>>>> = HashMap::new();
+            for t in &self.all_triangles {
+                let [i, j, k] = t.borrow().1;
+                m.entry([i, j]).or_default().push(t.clone());
+                m.entry([i, k]).or_default().push(t.clone());
+                m.entry([j, k]).or_default().push(t.clone());
+            }
+            m
+        };
+    }
+
+    /// Sort the indices to be [`EdgeIndex`]
+    ///
+    /// # Arguments
+    ///
+    /// - `x`: index 0
+    /// - `y`: index 1
+    ///
+    /// # Returns
+    ///
+    /// - `[min(x, y), max(x, y)]`
+    #[inline]
+    fn sort_to_edge(x: usize, y: usize) -> EdgeIndex {
+        [min(x, y), max(x, y)]
+    }
+
+    /// Sort the indices to be [`TriangleIndex`]
+    ///
+    /// # Arguments
+    ///
+    /// - `x`: index 0
+    /// - `y`: index 1
+    /// - `z`: index 2
+    ///
+    /// # Returns
+    ///
+    /// - `[v0, v1, v2]`: `v0` < `v1` < `v2`
+    #[inline]
+    fn sort_to_triangle(x: usize, y: usize, z: usize) -> TriangleIndex {
+        let mut v = vec![x, y, z];
+        v.sort();
+        [v[0], v[1], v[2]]
+    }
+
+    /// Build the initial triangle of graph.
+    ///
+    /// This mostly return the values,
+    /// but updates the value `self.open_edges` directly.
+    ///
+    /// # Returns
+    ///
+    /// - `(new_edges, new_vertices, next_triangle)`
+    ///   - `new_edges`: new edges to add
+    ///   - `new_vertices`: new vertices to add
+    ///   - `next_triangle`: new triangle to add
+    fn build_initial_triangle(&mut self) -> (Vec<EdgeIndex>, Vec<usize>, TriangleIndex) {
+        let new_edges: Vec<EdgeIndex>;
+        let new_vertices: Vec<usize>;
+        let next_triangle: TriangleIndex;
+        // select the smallest triangle
+        next_triangle = self
+            .all_triangles
+            .iter()
+            .map(|rc| rc.borrow())
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .unwrap()
+            .1;
+        new_edges = enumerate_edges(&next_triangle);
+        new_vertices = next_triangle.to_vec();
+        // add all new edges
+        self.open_edges = new_edges.clone();
+
+        (new_edges, new_vertices, next_triangle)
+    }
+
+    /// Select the shortest total edge length triangle with `open_edges`
+    ///
+    /// # Arguments
+    ///
+    /// - `visited`: vertices already added
+    ///
+    /// # Returns
+    ///
+    /// - shortest triangle
+    fn select_shortest_triangle_with_open_edges(&self, visited: &HashSet<usize>) -> TriangleIndex {
+        self.open_edges
+            .iter()
+            .map(|e| -> Vec<_> {
+                self.all_triangles_on_edges[&[e[0], e[1]]]
+                    .iter()
+                    .filter(|rc| {
+                        rc.borrow()
+                            .1
+                            .iter()
+                            .all(|&v| (v == e[0]) || (v == e[1]) || !visited.contains(&v))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
+            .map(|rc| rc.borrow().clone())
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .unwrap()
+            .1
+    }
+
+    /// Build the second or later triangle of graph.
+    ///
+    /// This mostly return the values,
+    /// but updates the value `self.open_edges` directly.
+    ///
+    /// # Arguments
+    ///
+    /// - `visited`: vertices already added
+    ///
+    /// # Returns
+    ///
+    /// - `(new_edges, new_vertices, next_triangle)`
+    ///   - `new_edges`: new edges to add
+    ///   - `new_vertices`: new vertices to add
+    ///   - `next_triangle`: new triangle to add
+    fn expand_graph_with_next_triangle(
+        &mut self,
+        visited: &HashSet<usize>,
+    ) -> (Vec<EdgeIndex>, Vec<usize>, TriangleIndex) {
+        // select the next triangle
+        let next_triangle: TriangleIndex = self.select_shortest_triangle_with_open_edges(visited);
+
+        // select new vertices among the vertices in the new triangle
+        let (old_v, new_v): ([usize; 2], usize) = {
+            let (o, n): (Vec<usize>, Vec<usize>) =
+                next_triangle.iter().partition(|v| visited.contains(&v));
+            assert_eq!(n.len(), 1, "n: {:?}", n);
+            (o.try_into().unwrap(), n[0])
+        };
+
+        let new_edges: Vec<EdgeIndex> = vec![
+            Self::sort_to_edge(old_v[0], new_v),
+            Self::sort_to_edge(old_v[1], new_v),
+        ];
+        let new_vertices: Vec<usize> = vec![new_v];
+
+        // add new edges and remove old edges
+        self.open_edges.retain(|&vs| vs != old_v);
+        self.open_edges.extend(&new_edges);
+
+        (new_edges, new_vertices, next_triangle)
+    }
+
+    /// Build the graph as the initial answer.
+    /// This updates the value `self.graph`.
+    ///
+    /// This also updates the values `self.open_edges`
+    /// and `self.triangles_in_graphs_on_edges
+    fn construct_initial_graph(&mut self) {
+        // visited vertices
+        let mut visited: HashSet<usize> = HashSet::new();
+
+        while visited.len() < self.n {
+            let new_edges: Vec<EdgeIndex>;
+            let new_vertices: Vec<usize>;
+            let next_triangle: TriangleIndex;
+            (new_edges, new_vertices, next_triangle) = if self.graph.is_empty() {
+                // first time
+                self.build_initial_triangle()
+            } else {
+                // not first time
+                self.expand_graph_with_next_triangle(&visited)
+            };
+
+            let next_edges: Vec<EdgeIndex> = enumerate_edges(&next_triangle);
+            next_edges.iter().for_each(|&e| {
+                self.triangles_in_graphs_on_edges
+                    .entry(e)
+                    .or_default()
+                    .push(next_triangle.clone());
+            });
+
+            self.graph.extend(&new_edges);
+            new_vertices.into_iter().for_each(|v| {
+                visited.insert(v);
+            });
+
+            for e in next_edges {
+                for t in self.all_triangles_on_edges[&[e[0], e[1]]].clone() {
+                    t.borrow_mut().0 -= self.edge_lengths[e[0]][e[1]];
+                }
+            }
+        }
+    }
+
+    /// Get the number of triangles that have given edge.
+    ///
+    /// # Arguments
+    ///
+    /// - `e`: edge
+    ///
+    /// # Returns
+    ///
+    /// - number of triangles that have the edge
+    #[inline]
+    fn get_triangle_num_with_edge(&self, e: &EdgeIndex) -> usize {
+        self.triangles_in_graphs_on_edges
+            .get(e)
+            .map_or(0, |ts| ts.len())
+    }
+
+    /// Get the value from array if the predicate is true.
+    ///
+    /// # Arguments
+    ///
+    /// - `arr`: array with 2 values
+    /// - `f`: predicate
+    ///
+    /// # Returns
+    ///
+    /// - [`Some<T>`]: value in array that `f(value)` is true,  if the predicate is true for only one value.
+    /// - [`None`]: if predicate is same result for both value
+    #[inline]
+    fn filter_from_two<T, F>(arr: [T; 2], f: F) -> Option<T>
+    where
+        T: Clone,
+        F: Fn(&T) -> bool,
+    {
+        match (f(&arr[0]), f(&arr[1])) {
+            (true, false) => Some(arr[0].clone()),
+            (false, true) => Some(arr[1].clone()),
+            _ => None,
+        }
+    }
+
+    /// Select the new edge when the edge to delete is open edge,
+    /// and the triangle with the edge has one more open edge. 
+    ///
+    /// This is the situation as below that a -- b is the edge to delete.
+    /// All edges in a -- b -- c -- d is open edge, and c -- d is closed edge.
+    /// This function select b -- d.
+    ///
+    /// ```
+    /// a─b
+    ///  ╲│
+    ///   c─d
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: Edge to delete, a -- b in figure.
+    /// - `open_edge_adj`: The adjacent open edge in `edge_del`, b -- c in figure.
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(EdgeIndex)`]: The new edge to connect. b -- d in figure.
+    /// - [`None`]: If candidate is longer than `edge_del`.
+    fn select_new_edge_for_triangle_with_1_open_edge(
+        &self,
+        edge_del: &EdgeIndex,
+        open_edge_adj: &EdgeIndex,
+    ) -> Option<EdgeIndex> {
+        let candidate: EdgeIndex = {
+            // pivot: point in `open_edges_adj`, not in `edge_del`, c in figure.
+            // v: the other point in `open_edges_adj`, b in figure.
+            let (pivot, v): (usize, usize) = if edge_del.contains(&open_edge_adj[0]) {
+                (open_edge_adj[1], open_edge_adj[0])
+            } else {
+                (open_edge_adj[0], open_edge_adj[1])
+            };
+
+            (0..self.n)
+                .find_map(|i| {
+                    let e: EdgeIndex = Self::sort_to_edge(i, pivot);
+                    if (self.get_triangle_num_with_edge(&e) == 1) && !(&e == open_edge_adj) {
+                        Some(Self::sort_to_edge(i, v))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap()
+        };
+
+        // cannot connect if candidate is longer than `edge_del`
+        if self.edge_lengths[candidate[0]][candidate[1]]
+            >= self.edge_lengths[edge_del[0]][edge_del[1]]
+        {
+            return None;
+        }
+        Some(candidate)
+    }
+
+    /// Find adjacent vertex with same side.
+    ///
+    /// See [`select_new_edge_for_open_triangle_without_open_edge()`].
+    ///
+    /// This function find one of c, d that connected with a in figure, when c -- d is cut.
+    ///
+    /// # Arguments
+    ///
+    /// - `pivot`: central vertex
+    /// - `adj_vs_open`: the 2 vertices connected with `pivot` by the open edge. a, b in figure.
+    /// - `adj_vs_closed`: the 2 vertices connected with `pivot` by the closed edge.
+    ///   c, d in figure.
+    ///
+    /// # Returns
+    ///
+    /// - One of the `adj_vs_closed` in same side of `adj_vs_open[0]`
+    fn walk_to_find_adjacent_vertex_with_same_side(
+        &self,
+        pivot: usize,
+        adj_vs_open: [usize; 2],
+        adj_vs_closed: [usize; 2],
+    ) -> usize {
+        // start with `adj_vs_open[0]`
+        let mut i: usize = adj_vs_open[0];
+        let mut i_prev: usize = pivot;
+
+        // find one of the `adj_vs_closed` which is in same side
+        loop {
+            // find next adjacent vertex along the open edge
+            let i_next: usize = (0..self.n)
+                .find(|&j| {
+                    let e: EdgeIndex = Self::sort_to_edge(i, j);
+                    (self.get_triangle_num_with_edge(&e) == 1) && (j != i_prev)
+                })
+                .unwrap();
+            i_prev = i;
+            i = i_next;
+
+            if adj_vs_closed.contains(&i) {
+                break;
+            }
+        }
+
+        i
+    }
+
+    /// For the vertex connected with 2 open edges and 2 closed edges,
+    /// partition the 4 vertices connected with it to 2 groups made of 2 verticies by position
+    /// by using adjacent points' data precalculated.
+    ///
+    /// See [`select_new_edge_for_open_triangle_without_open_edge()`].
+    ///
+    /// # Arguments
+    ///
+    /// - `pivot`: The vertex connected with 2 open edges and 2 closed edges
+    /// - `adj_vs_open`: The 2 vertices connected with `pivot` by the open edge. a, b in figure.
+    /// - `adj_vs_closed`: The 2 vertices connected with `pivot` by the closed edge.
+    ///   c, d in figure.
+    ///
+    /// # Returns
+    ///
+    /// - `(x, y)`
+    ///   - `x`: The 2 vertices in the same side
+    ///   - `y`: The 2 vertices in the other side
+    fn partition_vertices_by_position_with_adj_data(
+        &self,
+        pivot: usize,
+        adj_vs_open: [usize; 2],
+        adj_vs_closed: [usize; 2],
+    ) -> ([usize; 2], [usize; 2]) {
+        // adjacent vertices in same side when remove `edge_del`
+        let x: [usize; 2] = {
+            [
+                adj_vs_open[0],
+                self.walk_to_find_adjacent_vertex_with_same_side(pivot, adj_vs_open, adj_vs_closed),
+            ]
+        };
+
+        // the other vertices not `x`
+        let y: [usize; 2] = [
+            Self::filter_from_two(adj_vs_open, |&v| !x.contains(&v)).unwrap(),
+            Self::filter_from_two(adj_vs_closed, |&v| !x.contains(&v)).unwrap(),
+        ];
+        (x, y)
+    }
+
+    /// Let `pivot` is the vertex in the triangle with the edge to delete, but not in the edge.
+    /// `pivot` is connected with 2 open edges and 2 closed edges.
+    /// Partition the 4 vertices connected with it to 2 groups made of 2 verticies by position.
+    ///
+    /// See [`select_new_edge_for_open_triangle_without_open_edge()`].
+    ///
+    /// # Arguments
+    ///
+    /// - `closed_edges_adj`: The 2 vertices connected with the edge to delete.
+    ///
+    /// # Returns
+    ///
+    /// - `(x, y)`
+    ///   - `x`: The 2 vertices in the same side
+    ///   - `y`: The 2 vertices in the other side
+    fn partition_vertices_by_position(
+        &self,
+        closed_edges_adj: [EdgeIndex; 2],
+    ) -> ([usize; 2], [usize; 2]) {
+        // common point of closed_edges_adj
+        let pivot: usize =
+            Self::filter_from_two(closed_edges_adj[0], |&x| closed_edges_adj[1].contains(&x))
+                .unwrap();
+        // adjacent vertices of `pivot`, with open edge between `pivot`. a, b in figure.
+        let adj_vs_open: [usize; 2] = (0..self.n)
+            .filter(|&i| {
+                let e: EdgeIndex = Self::sort_to_edge(i, pivot);
+                self.get_triangle_num_with_edge(&e) == 1
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        // adjacent vertices of `pivot`, with closed edge between `pivot`. c, d in figure.
+        let adj_vs_closed: [usize; 2] = [
+            Self::filter_from_two(closed_edges_adj[0], |&x| x != pivot).unwrap(),
+            Self::filter_from_two(closed_edges_adj[1], |&x| x != pivot).unwrap(),
+        ];
+
+        self.partition_vertices_by_position_with_adj_data(pivot, adj_vs_open, adj_vs_closed)
+    }
+
+    /// Select the new edge when the edge to delete is open edge,
+    /// and the triangle with the edge has no other open edge. 
+    /// 
+    /// This is the situation as below that c -- d is the edge to delete.
+    /// `p` is pivot and a -- p, b -- p is open edges, while c -- p, d -- p is closed edges.
+    /// When c -- d is cut, one of c, d is connected with a, and the other is connected with b.
+    /// Let `x`, `y` to be These connection groups.
+    /// `x` is [a, (one of c, d)] and `y` is [b, (the other one of c, d)].
+    /// This function selects each one vertex from `x` and `y`
+    /// to be shortest metric distance.
+    /// ```
+    ///  a b
+    /// ┌┴─┴┐
+    /// │ p │
+    /// └┬─┬┘
+    ///  c─d
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete, c -- d in figure.
+    /// - `closed_edges_adj`: The 2 vertices connected with the `edge_del`, p -- c and p -- d in figure.
+    ///
+    /// # Returns
+    ///
+    /// - `[Some(EdgeIndex)]`: The new edge to connect. This is (one of `x`) -- (one of `y`).
+    /// - `[None]`: If `edge_del` is already the shortest edge between `x` and `y`.
+    fn select_new_edge_for_triangle_without_open_edge(
+        &self,
+        edge_del: &EdgeIndex,
+        closed_edges_adj: [EdgeIndex; 2],
+    ) -> Option<EdgeIndex> {
+        let candidate: EdgeIndex = {
+            let (x, y): ([usize; 2], [usize; 2]) =
+                self.partition_vertices_by_position(closed_edges_adj);
+
+            // find shortest edge between two sides `x`, and `y` around `pivot`
+            x.into_iter()
+                .zip(y.into_iter())
+                .map(|(x, y)| Self::sort_to_edge(x, y))
+                .min_by(|e1, e2| {
+                    self.edge_lengths[e1[0]][e1[1]]
+                        .partial_cmp(&self.edge_lengths[e2[0]][e2[1]])
+                        .unwrap()
+                })
+                .unwrap()
+        };
+
+        // If `edge_del` is already the shortest edge between `x` and `y`,
+        // it cannot be connected.
+        if candidate == *edge_del {
+            return None;
+        }
+        Some(candidate)
+    }
+
+    
+    /// Select the new edge when the edge to delete is open edge.
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(EdgeIndex)`]: The new edge to connect.
+    /// - [`None`]: If no shorter edge can connect when `edge_del` is deleted.
+    fn select_new_edge_for_open_edge(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
+        // remaining edges in triangle with `edge_del`, classified by open-closed
+        let (open_edges_adj, closed_edges_adj): (Vec<EdgeIndex>, Vec<EdgeIndex>) = {
+            assert_eq!(
+                self.get_triangle_num_with_edge(edge_del),
+                1,
+                "[{:?}]: {:?}",
+                edge_del,
+                self.triangles_in_graphs_on_edges
+                    .get(edge_del)
+                    .unwrap_or(&Vec::new())
+            );
+            let t: TriangleIndex = self.triangles_in_graphs_on_edges[edge_del][0];
+            enumerate_edges(&t)
+                .into_iter()
+                .filter(|e| e != edge_del)
+                .partition(|e| self.get_triangle_num_with_edge(e) == 1)
+        };
+
+        if open_edges_adj.len() == 2 {
+            // cannot swap
+            return None;
+        }
+
+        if open_edges_adj.len() == 1 {
+            debug_eprintln!("open-oc");
+            self.select_new_edge_for_triangle_with_1_open_edge(edge_del, &open_edges_adj[0])
+        } else {
+            // when no more open edges is in the triangle
+            debug_eprintln!("open-cc");
+            self.select_new_edge_for_triangle_without_open_edge(
+                edge_del,
+                closed_edges_adj.try_into().unwrap(),
+            )
+        }
+    }
+
+    /// Select the new edge when the edge to delete is closed edge.
+    ///
+    /// This is the situation as below that x -- y is the edge to delete.
+    /// This function selects a -- b.
+    /// a -- b is maybe connected. If a -- b is connected, this function selects nothing.
+    ///
+    /// ```
+    /// ┌a┐
+    /// x─y
+    /// └b┘
+    /// ```
+    /// 
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(EdgeIndex)`]: The new edge to connect.
+    /// - [`None`]: If the candidate is longer than `edge_del`,
+    ///   or the candidate is already connected.
+    fn select_new_edge_for_closed_edge(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
+
+        // vertices connected with the ends of `edge_del`
+        let vs: Vec<usize> = self.triangles_in_graphs_on_edges[edge_del]
+            .iter()
+            .flatten()
+            .cloned()
+            .filter(|p| !edge_del.contains(p))
+            .collect();
+        assert_eq!(vs.len(), 2, "vs: {:?}", vs);
+
+        let e = Self::sort_to_edge(vs[0], vs[1]);
+        // cannot connect if candidate is longer than `edge_del`,
+        // or candidate is already connected
+        if self.graph.contains(&e) {
+            return None;
+        }
+        if self.edge_lengths[e[0]][e[1]] >= self.edge_lengths[edge_del[0]][edge_del[1]] {
+            return None;
+        }
+
+        Some(e)
+    }
+
+    /// Remove triangles that contains `edge_del`
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    fn remove_triangles_with_edge(&mut self, edge_del: &EdgeIndex) {
+        for t in self.triangles_in_graphs_on_edges[edge_del].clone() {
+            for e in &enumerate_edges(&t) {
+                if e == edge_del {
+                    continue;
+                }
+
+                self.triangles_in_graphs_on_edges
+                    .get_mut(e)
+                    .unwrap()
+                    .retain(|&tt| tt != t);
+            }
+        }
+        self.triangles_in_graphs_on_edges.remove(edge_del);
+    }
+
+    /// Add triangles that contains `edge_add`
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_add`: The edge to add
+    fn add_triangle_with_edge(&mut self, edge_add: &EdgeIndex) {
+        for i in 0..self.n {
+            let e1: EdgeIndex = Self::sort_to_edge(i, edge_add[0]);
+            let e2: EdgeIndex = Self::sort_to_edge(i, edge_add[1]);
+            if !self.graph.contains(&e1) || !self.graph.contains(&e2) {
+                continue;
+            }
+
+            let t: TriangleIndex = Self::sort_to_triangle(i, edge_add[0], edge_add[1]);
+            debug_eprintln!("new triangle: {:?}", t);
+
+            self.triangles_in_graphs_on_edges
+                .entry(e1)
+                .or_default()
+                .push(t);
+            self.triangles_in_graphs_on_edges
+                .entry(e2)
+                .or_default()
+                .push(t);
+            self.triangles_in_graphs_on_edges
+                .entry(edge_add.clone())
+                .or_default()
+                .push(t);
+        }
+    }
+
+    /// Add triangles that contains `edge_add`
+    /// and remove triangles that contains `edge_del`.
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    /// - `edge_add`: The edge to add
+    fn refresh_triangles(&mut self, edge_del: &EdgeIndex, edge_add: &EdgeIndex) {
+        self.remove_triangles_with_edge(edge_del);
+        self.add_triangle_with_edge(edge_add);
+    }
+
+    /// Add and remove the edge and refresh the graph state.
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_del`: The edge to delete
+    /// - `edge_add`: The edge to add
+    fn refresh_edges(&mut self, edge_del: &EdgeIndex, edge_add: &EdgeIndex) {
+        // swap edges
+        self.graph.retain(|e| e != edge_del);
+        self.graph.insert(edge_add.clone());
+        self.open_edges.retain(|e| e != edge_del);
+        self.open_edges.push(edge_add.clone());
+
+        self.refresh_triangles(edge_del, edge_add);
+        debug_eprintln!("swaped {:?}, {:?}", &edge_del, &edge_add);
+    }
+
+    /// Optimize the graph by removing and add each one edge
+    ///
+    /// # Returns
+    ///
+    /// `true` if graph is changed
+    fn optimize_iteration_graph_edges(&mut self) -> bool {
+        // edges of graph in descending order
+        let edges_desc: Vec<EdgeIndex> = self
+            .graph
+            .iter()
+            .cloned()
+            .sorted_by(|a, b| {
+                self.edge_lengths[b[0]][b[1]]
+                    .partial_cmp(&self.edge_lengths[a[0]][a[1]])
+                    .unwrap()
+            })
+            .collect();
+
+        for edge_del in &edges_desc {
+            let maybe_edge_add: Option<EdgeIndex> = {
+                // if `edge_del` is open triangle or not
+                let is_open = self.get_triangle_num_with_edge(edge_del) == 1;
+                if is_open {
+                    self.select_new_edge_for_open_edge(edge_del)
+                } else {
+                    debug_eprintln!("closed");
+                    self.select_new_edge_for_closed_edge(edge_del)
+                }
+            };
+            if let Some(edge_add) = maybe_edge_add {
+                self.refresh_edges(edge_del, &edge_add);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Calculate the answer
+    ///
+    /// # Returns
+    ///
+    /// - `Vec<[p0, p1]>`: the edges of the graph
+    fn calc_answer(&mut self) -> Vec<Edge> {
+        if self.n <= 1 {
+            return Vec::new();
+        }
+        if self.n == 2 {
+            return vec![[self.points[0], self.points[1]]];
+        }
+
+        self.construct_initial_graph();
+
+        debug_eprintln!("graph: {:?}", &self.graph);
+        debug_eprintln!("triangles: {:?}", &self.triangles_in_graphs_on_edges);
+        // swap open_edges if graph gets shorter
+        loop {
+            if !self.optimize_iteration_graph_edges() {
+                break;
+            }
+        }
+
+        // convert indicies to edge
+        self.graph
+            .iter()
+            .map(|&[i, j]| [self.points[i], self.points[j]])
+            .collect()
+    }
+
+    /// Solve the problem
+    ///
+    /// When `solve()` is already called, it use stored answer.
+    ///
+    /// # Returns
+    ///
+    /// - `Vec<[p0, p1]>`: the edges of the graph
+    pub fn solve(&mut self) -> Vec<Edge> {
+        if self.answer.is_none() {
+            self.answer = Some(self.calc_answer());
+        }
+
+        self.answer.clone().unwrap()
+    }
+}
+
+/// Find a graph that minimizes the total edge length, using a heuristic approach
 /// while satisfying the following conditions:
 ///
 /// - Edges are generated as follows:
@@ -89,425 +922,8 @@ pub fn min_spanning_by_prim(points: &Vec<na::Vector2<f64>>) -> Vec<[na::Vector2<
 /// # Returns
 ///
 /// - `Vec<[p0, p1]>`: the edges of the graph
-pub fn small_triangular_spanning(points: &Vec<na::Vector2<f64>>) -> Vec<[na::Vector2<f64>; 2]> {
-    if points.len() <= 1 {
-        return Vec::new();
-    }
-    if points.len() == 2 {
-        return vec![[points[0], points[1]]];
-    }
-
-    // calculate the edge length
-    let edges: Vec<Vec<f64>> = points
-        .iter()
-        .map(|p1| points.iter().map(|p2| p1.metric_distance(&p2)).collect())
-        .collect();
-
-    // remaining triangles having current adding cost
-    let all_triangles: Vec<Rc<RefCell<(f64, [usize; 3])>>> = (0..points.len())
-        .combinations(3)
-        .map(|v| {
-            Rc::new(RefCell::new((
-                edges[v[0]][v[1]] + edges[v[1]][v[2]] + edges[v[2]][v[0]],
-                [v[0], v[1], v[2]],
-            )))
-        })
-        .collect();
-
-    let all_triangles_on_edges: HashMap<[usize; 2], Vec<Rc<RefCell<(f64, [usize; 3])>>>> = {
-        let mut m: HashMap<[usize; 2], Vec<Rc<RefCell<(f64, [usize; 3])>>>> = HashMap::new();
-        for t in &all_triangles {
-            let [i, j, k] = t.borrow().1;
-            m.entry([i, j]).or_default().push(t.clone());
-            m.entry([i, k]).or_default().push(t.clone());
-            m.entry([j, k]).or_default().push(t.clone());
-        }
-        m
-    };
-
-    // indicies of the edges in the spanning tree
-    let mut graph: HashSet<[usize; 2]> = HashSet::new();
-
-    // visited vertices
-    let mut visited: HashSet<usize> = HashSet::new();
-    // next candidate edges; belong to only 1 triangle
-    let mut open_edges: Vec<[usize; 2]> = Vec::new();
-
-    let mut triangles_in_graphs_on_edges: HashMap<[usize; 2], Vec<[usize; 3]>> = HashMap::new();
-
-    while visited.len() < points.len() {
-        let new_edges: Vec<[usize; 2]>;
-        let new_vertices: Vec<usize>;
-        let next_triangle: [usize; 3];
-        if graph.is_empty() {
-            // first time
-            // select the smallest triangle
-            next_triangle = all_triangles
-                .iter()
-                .map(|rc| rc.borrow())
-                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
-                .unwrap()
-                .1;
-            new_edges = next_triangle
-                .iter()
-                .zip(next_triangle.iter().cycle().skip(1))
-                .map(|(&a, &b)| [min(a, b), max(a, b)])
-                .collect();
-            new_vertices = next_triangle.to_vec();
-            // add all new edges
-            open_edges = new_edges.clone();
-        } else {
-            // not first time
-            // select the next triangle
-            next_triangle = open_edges
-                .iter()
-                .map(|e| {
-                    all_triangles_on_edges[&[e[0], e[1]]]
-                        .iter()
-                        .filter(|rc| {
-                            rc.borrow()
-                                .1
-                                .iter()
-                                .all(|&v| (v == e[0]) || (v == e[1]) || !visited.contains(&v))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .flatten()
-                .map(|rc| rc.borrow().clone())
-                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
-                .unwrap()
-                .1;
-
-            // select new vertices among the vertices in the new triangle
-            let (old_v, new_v) = {
-                let i = next_triangle
-                    .iter()
-                    .position(|v| !visited.contains(v))
-                    .unwrap();
-                let js = (0..=2).filter(|&j| j != i).collect::<Vec<_>>();
-                (
-                    [next_triangle[js[0]], next_triangle[js[1]]],
-                    next_triangle[i],
-                )
-            };
-
-            new_edges = vec![
-                [min(old_v[0], new_v), max(old_v[0], new_v)],
-                [min(old_v[1], new_v), max(old_v[1], new_v)],
-            ];
-            new_vertices = vec![new_v];
-
-            // add new edges and remove old edges
-            open_edges.retain(|&vs| vs != old_v);
-            open_edges.extend(&new_edges);
-        }
-
-        let next_edges: Vec<[usize; 2]> = next_triangle
-            .iter()
-            .zip(next_triangle.iter().cycle().skip(1))
-            .map(|(&a, &b)| [min(a, b), max(a, b)])
-            .collect();
-        next_edges.iter().for_each(|&e| {
-            triangles_in_graphs_on_edges
-                .entry(e)
-                .or_default()
-                .push(next_triangle.clone());
-        });
-
-        graph.extend(&new_edges);
-        new_vertices.into_iter().for_each(|v| {
-            visited.insert(v);
-        });
-
-        for e in next_edges {
-            for t in all_triangles_on_edges[&[e[0], e[1]]].clone() {
-                t.borrow_mut().0 -= edges[e[0]][e[1]];
-            }
-        }
-    }
-
-    // swap open_edges if graph gets shorter
-    loop {
-        // edges of graph in descending order
-        let edges_desc: Vec<[usize; 2]> = graph
-            .iter()
-            .cloned()
-            .sorted_by(|a, b| edges[b[0]][b[1]].partial_cmp(&edges[a[0]][a[1]]).unwrap())
-            .collect();
-
-        let mut is_moved = false;
-        for e_del in &edges_desc {
-            // if `e_del` is open triangle or not
-            let is_open = triangles_in_graphs_on_edges[e_del].len() == 1;
-
-            let e_add: [usize; 2] = if is_open {
-                // remaining edges in triangle with `e_del`, classified by open-closed
-                let (open_edges_adj, closed_edges_adj): (Vec<[usize; 2]>, Vec<[usize; 2]>) = {
-                    let mut o: Vec<[usize; 2]> = Vec::new();
-                    let mut c: Vec<[usize; 2]> = Vec::new();
-
-                    let vs: [usize; 3] = triangles_in_graphs_on_edges[e_del][0];
-                    let es: Vec<[usize; 2]> = vs
-                        .iter()
-                        .zip(vs.iter().cycle().skip(1))
-                        .map(|(&a, &b)| [min(a, b), max(a, b)])
-                        .collect();
-
-                    for e in es {
-                        if &e == e_del {
-                            continue;
-                        }
-                        if triangles_in_graphs_on_edges[&e].len() == 1 {
-                            o.push(e);
-                        } else {
-                            c.push(e);
-                        }
-                    }
-
-                    (o, c)
-                };
-
-                if open_edges_adj.len() == 2 {
-                    // cannot swap
-                    continue;
-                }
-
-                if open_edges_adj.len() == 1 {
-                    // If the open edges are connected as a -- b -- c -- d,
-                    // and a -- c are also directly connected,
-                    // then remove the edge a -- b and connect b -- d.
-                    let candidate: [usize; 2] = {
-                        // point in `open_edges_adj[0]`, not in `e1`
-                        let pivot: usize = open_edges_adj[0]
-                            .iter()
-                            .find(|&v| !e_del.contains(v))
-                            .copied()
-                            .unwrap();
-                        // the other point in `open_edges_adj[0]`
-                        let v: usize = open_edges_adj[0]
-                            .iter()
-                            .find(|&x| x != &pivot)
-                            .copied()
-                            .unwrap();
-
-                        (0..points.len())
-                            .find_map(|i| {
-                                let e: [usize; 2] = [min(i, pivot), max(i, pivot)];
-                                if triangles_in_graphs_on_edges
-                                    .get(&e)
-                                    .map_or(0, |ts| ts.len())
-                                    == 1
-                                {
-                                    if e == open_edges_adj[0] {
-                                        None
-                                    } else {
-                                        Some([min(i, v), max(i, v)])
-                                    }
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap()
-                    };
-                    // cannot connect if candidate is longer than `e_del`
-                    if edges[candidate[0]][candidate[1]] >= edges[e_del[0]][e_del[1]] {
-                        continue;
-                    }
-                    candidate
-                } else {
-                    // when no more open edges is in the triangle
-                    let candidate: [usize; 2] = {
-                        // common point of closed_edges_adj
-                        let pivot: usize = closed_edges_adj[0]
-                            .iter()
-                            .find(|&v| closed_edges_adj[1].contains(v))
-                            .copied()
-                            .unwrap();
-                        // adjacent vertices of `pivot`, with open edge between `pivot`
-                        let adj_vs_open: Vec<usize> = (0..points.len())
-                            .filter_map(|i| {
-                                let e: [usize; 2] = [min(i, pivot), max(i, pivot)];
-                                if triangles_in_graphs_on_edges
-                                    .get(&e)
-                                    .map_or(0, |ts| ts.len())
-                                    == 1
-                                {
-                                    Some(i)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        // adjacent vertices of `pivot`, with closed edge between `pivot`
-                        let adj_vs_closed: Vec<usize> = closed_edges_adj
-                            .iter()
-                            .flatten()
-                            .cloned()
-                            .filter(|&v| v != pivot)
-                            .collect();
-
-                        // adjacent vertices in same side when remove `e_del`
-                        let a: Vec<usize> = {
-                            // start with `adj_vs_open[0]`
-                            let mut i: usize = adj_vs_open[0];
-                            let mut i_prev: usize = pivot;
-
-                            // find one of the `adj_vs_closed` which is in same side
-                            loop {
-                                // find next adjacent vertex along the open edge
-                                let i_next: usize = (0..points.len())
-                                    .find_map(|j| {
-                                        let e: [usize; 2] = [min(j, i), max(j, i)];
-                                        if triangles_in_graphs_on_edges
-                                            .get(&e)
-                                            .map_or(0, |ts| ts.len())
-                                            == 1
-                                        {
-                                            if j == i_prev {
-                                                None
-                                            } else {
-                                                Some(j)
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .unwrap();
-                                i_prev = i;
-                                i = i_next;
-
-                                if adj_vs_closed.contains(&i) {
-                                    break;
-                                }
-                            }
-                            vec![adj_vs_open[0], i]
-                        };
-
-                        // the other vertices not `a`
-                        let b: Vec<usize> = vec![
-                            adj_vs_open
-                                .iter()
-                                .find(|v| !a.contains(*v))
-                                .copied()
-                                .unwrap(),
-                            adj_vs_closed
-                                .iter()
-                                .find(|v| !a.contains(*v))
-                                .copied()
-                                .unwrap(),
-                        ];
-
-                        // find shortest edge between `a` and `b`
-                        a.into_iter()
-                            .zip(b.into_iter())
-                            .map(|(x, y)| -> [usize; 2] { [min(x, y), max(x, y)] })
-                            .min_by(|e1, e2| {
-                                edges[e1[0]][e1[1]]
-                                    .partial_cmp(&edges[e2[0]][e2[1]])
-                                    .unwrap()
-                            })
-                            .unwrap()
-                    };
-
-                    // If `e_del` is already the longest edge between `a` and `b`,
-                    // it cannot be connected.
-                    if &candidate == e_del {
-                        continue;
-                    }
-                    candidate
-                }
-            } else {
-                // if `e_del` is closed
-                // When `e_del` is x -- y,
-                // and a -- x -- b -- y -- a is connected in this order,
-                // the remove x -- y and connect a -- b.
-
-                // vertices connected with the ends of `e_del`
-                let vs: Vec<usize> = triangles_in_graphs_on_edges[e_del]
-                    .iter()
-                    .flatten()
-                    .cloned()
-                    .filter(|p| (p != &e_del[0]) && (p != &e_del[1]))
-                    .collect();
-                assert_eq!(vs.len(), 2);
-
-                let e = [min(vs[0], vs[1]), max(vs[0], vs[1])];
-                // cannot connect if candidate is longer than `e_del`,
-                // or candidate is already connected
-                if graph.contains(&e) {
-                    continue;
-                }
-                if edges[e[0]][e[1]] >= edges[e_del[0]][e_del[1]] {
-                    continue;
-                }
-
-                e
-            };
-
-            // swap edges
-            graph.retain(|e| e != e_del);
-            graph.insert(e_add.clone());
-            open_edges.retain(|e| e != e_del);
-            open_edges.push(e_add.clone());
-
-            // remove triangles with `e1` from `triangles_in_graphs_on_edges`
-            for t in triangles_in_graphs_on_edges[e_del].clone() {
-                for e in t
-                    .iter()
-                    .zip(t.iter().cycle().skip(1))
-                    .map(|(&i, &j)| [min(i, j), max(i, j)])
-                {
-                    if &e == e_del {
-                        continue;
-                    }
-
-                    triangles_in_graphs_on_edges
-                        .get_mut(&e)
-                        .unwrap()
-                        .retain(|&tt| tt != t);
-                }
-            }
-            triangles_in_graphs_on_edges.remove(e_del);
-
-            // add triangles with `e2` to `triangles_in_graphs_on_edges`
-            for i in 0..points.len() {
-                let ee1: [usize; 2] = [min(i, e_add[0]), max(i, e_add[0])];
-                let ee2: [usize; 2] = [min(i, e_add[1]), max(i, e_add[1])];
-                if !graph.contains(&ee1) || !graph.contains(&ee2) {
-                    continue;
-                }
-
-                let t: [usize; 3] = [i, e_add[0], e_add[1]]
-                    .into_iter()
-                    .sorted()
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap();
-                triangles_in_graphs_on_edges.entry(ee1).or_default().push(t);
-                triangles_in_graphs_on_edges.entry(ee2).or_default().push(t);
-                triangles_in_graphs_on_edges
-                    .entry(e_add)
-                    .or_default()
-                    .push(t);
-            }
-
-            dbg!(format!("swaped {:?}, {:?}", &e_del, &e_add));
-
-            is_moved = true;
-            break;
-        }
-
-        // end if no more edges to swap
-        if !is_moved {
-            break;
-        }
-    }
-
-    // convert indicies to edge
-    graph
-        .into_iter()
-        .map(|[i, j]| [points[i], points[j]])
-        .collect()
+pub fn small_triangular_spanning(points: &Vec<na::Vector2<f64>>) -> Vec<Edge> {
+    TriangleSpanningCalculator::new(points).solve()
 }
 
 pub(crate) mod test {
@@ -516,7 +932,7 @@ pub(crate) mod test {
     use rand::{thread_rng, Rng};
     use scad_tree::prelude::*;
 
-    /// Create a small spanning triangular mesh from the random points
+    /// Generate random points
     ///
     /// # Arguments
     ///
@@ -524,16 +940,10 @@ pub(crate) mod test {
     ///
     /// # Returns
     ///
-    /// - [`Some(Scad)`]: [`Scad`] object of test 3D object
-    /// - `None`: if `n < 3`
-    pub fn test_small_triangular_spanning(n: usize) -> Option<Scad> {
-        if n < 3 {
-            return None;
-        }
-
+    /// - [`Vec<na::Vector2<f64>>`]: random points
+    fn generate_random_points(n: usize) -> Vec<na::Vector2<f64>> {
         let mut rng = thread_rng();
-        // random points
-        let points: Vec<na::Vector2<f64>> = (0..n)
+        (0..n)
             .map(|_| {
                 (0..5)
                     .map(|_| {
@@ -541,11 +951,20 @@ pub(crate) mod test {
                     })
                     .fold(na::Vector2::zeros(), |a, b| 1.2 * a + b)
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
 
-        // small triangular mesh
-        let edges: Vec<[na::Vector2<f64>; 2]> = small_triangular_spanning(&points);
-
+    /// Generate test object showing the graph.
+    ///
+    /// # Arguments
+    ///
+    /// - `points`: vertices of the graph
+    /// - `edges`: edges of the graph
+    ///
+    /// # Returns
+    ///
+    /// - [`Scad`]: the object
+    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> Scad {
         // pillars on the points
         let pillars = points.into_iter().map(|p| {
             mirror! (
@@ -573,9 +992,33 @@ pub(crate) mod test {
 
         // pillars + edges
         let shapes: Vec<Scad> = pillars.chain(base_edges).collect();
-        Some(Scad {
+        Scad {
             op: ScadOp::Union,
             children: shapes,
-        })
+        }
+    }
+
+    /// Create a small spanning triangular mesh from the random points
+    ///
+    /// # Arguments
+    ///
+    /// - `n`: number of points
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(Scad)`]: [`Scad`] object of test 3D object
+    /// - `None`: if `n < 3`
+    pub fn test_small_triangular_spanning(n: usize) -> Option<Scad> {
+        if n < 3 {
+            return None;
+        }
+
+        // random points
+        let points: Vec<na::Vector2<f64>> = generate_random_points(n);
+
+        // small triangular mesh
+        let edges: Vec<Edge> = small_triangular_spanning(&points);
+
+        Some(generate_test_object(&points, &edges))
     }
 }
