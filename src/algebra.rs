@@ -9,6 +9,13 @@ use itertools::Itertools;
 use nalgebra as na;
 use ordered_float::OrderedFloat;
 
+macro_rules! debug_eprintln {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        eprintln!($($arg)*);
+    }
+}
+
 pub type EdgeIndex = [usize; 2];
 pub type Edge = [na::Vector2<f64>; 2];
 pub type TriangleIndex = [usize; 3];
@@ -531,11 +538,11 @@ impl TriangleSpanningCalculator {
         }
 
         if open_edges_adj.len() == 1 {
-            dbg!("open-oc");
+            debug_eprintln!("open-oc");
             self.select_new_edge_for_open_triangle_with_an_open_edge(edge_del, &open_edges_adj[0])
         } else {
             // when no more open edges is in the triangle
-            dbg!("open-cc");
+            debug_eprintln!("open-cc");
             self.select_new_edge_for_open_triangle_without_open_edge(
                 edge_del,
                 closed_edges_adj.try_into().unwrap(),
@@ -550,7 +557,6 @@ impl TriangleSpanningCalculator {
         // the remove x -- y and connect a -- b.
 
         // vertices connected with the ends of `e_del`
-        dbg!(&edge_del);
         let vs: Vec<usize> = self.triangles_in_graphs_on_edges[edge_del]
             .iter()
             .flatten()
@@ -603,7 +609,7 @@ impl TriangleSpanningCalculator {
             }
 
             let t: TriangleIndex = Self::sort_to_triangle(i, edge_add[0], edge_add[1]);
-            dbg!(t);
+            debug_eprintln!("new triangle: {:?}", t);
 
             self.triangles_in_graphs_on_edges
                 .entry(ee1)
@@ -619,7 +625,7 @@ impl TriangleSpanningCalculator {
                 .push(t);
         }
 
-        dbg!(format!("swaped {:?}, {:?}", &edge_del, &edge_add));
+        debug_eprintln!("swaped {:?}, {:?}", &edge_del, &edge_add);
     }
 
     fn optimize_graph_edges(&mut self) -> bool {
@@ -642,7 +648,7 @@ impl TriangleSpanningCalculator {
                 if is_open {
                     self.select_new_edge_for_open_triangle(edge_del)
                 } else {
-                    dbg!("closed");
+                    debug_eprintln!("closed");
                     self.select_new_edge_for_closed_triangle(edge_del)
                 }
             };
@@ -670,8 +676,8 @@ impl TriangleSpanningCalculator {
 
         self.construct_initial_graph();
 
-        dbg!(&self.graph);
-        dbg!(&self.triangles_in_graphs_on_edges);
+        debug_eprintln!("graph: {:?}", &self.graph);
+        debug_eprintln!("triangles: {:?}", &self.triangles_in_graphs_on_edges);
         // swap open_edges if graph gets shorter
         loop {
             if !self.optimize_graph_edges() {
