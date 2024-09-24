@@ -177,6 +177,18 @@ impl TriangleSpanningCalculator {
         };
     }
 
+    #[inline]
+    fn sort_to_edge(x: usize, y: usize) -> EdgeIndex {
+        [min(x, y), max(x, y)]
+    }
+
+    #[inline]
+    fn sort_to_triangle(x: usize, y: usize, z: usize) -> TriangleIndex {
+        let mut v = vec![x, y, z];
+        v.sort();
+        [v[0], v[1], v[2]]
+    }
+
     /// Build the initial triangle of graph.
     ///
     /// This mostly return the values,
@@ -262,21 +274,15 @@ impl TriangleSpanningCalculator {
 
         // select new vertices among the vertices in the new triangle
         let (old_v, new_v): ([usize; 2], usize) = {
-            let mut o: Vec<usize> = Vec::new();
-            let mut n: Option<usize> = None;
-            for v in next_triangle {
-                if visited.contains(&v) {
-                    o.push(v);
-                } else {
-                    n = Some(v);
-                }
-            }
-            (o.try_into().unwrap(), n.unwrap())
+            let (o, n): (Vec<usize>, Vec<usize>) =
+                next_triangle.iter().partition(|v| visited.contains(&v));
+            assert_eq!(n.len(), 1, "n: {:?}", n);
+            (o.try_into().unwrap(), n[0])
         };
 
         let new_edges: Vec<EdgeIndex> = vec![
-            [min(old_v[0], new_v), max(old_v[0], new_v)],
-            [min(old_v[1], new_v), max(old_v[1], new_v)],
+            Self::sort_to_edge(old_v[0], new_v),
+            Self::sort_to_edge(old_v[1], new_v),
         ];
         let new_vertices: Vec<usize> = vec![new_v];
 
@@ -329,10 +335,24 @@ impl TriangleSpanningCalculator {
         }
     }
 
-    fn get_triangle_num_with_edge(&self, edge: &EdgeIndex) -> usize {
+    #[inline]
+    fn get_triangle_num_with_edge(&self, e: &EdgeIndex) -> usize {
         self.triangles_in_graphs_on_edges
-            .get(edge)
+            .get(e)
             .map_or(0, |ts| ts.len())
+    }
+
+    #[inline]
+    fn filter_from_two<T, F>(arr: [T; 2], f: F) -> Option<T>
+    where
+        T: Clone,
+        F: Fn(&T) -> bool,
+    {
+        match (f(&arr[0]), f(&arr[1])) {
+            (true, false) => Some(arr[0].clone()),
+            (false, true) => Some(arr[1].clone()),
+            _ => None,
+        }
     }
 
     fn select_new_edge_for_open_triangle_with_an_open_edge(
@@ -344,8 +364,8 @@ impl TriangleSpanningCalculator {
         // and a -- c are also directly connected,
         // then remove the edge a -- b and connect b -- d.
         let candidate: EdgeIndex = {
-            // pivot: point in `open_edges_adj[0]`, not in `e1`
-            // v: the other point in `open_edges_adj[0]`
+            // pivot: point in `open_edges_adj`, not in `edge_del`
+            // v: the other point in `open_edges_adj`
             let (pivot, v): (usize, usize) = if edge_del.contains(&open_edge_adj[0]) {
                 (open_edge_adj[1], open_edge_adj[0])
             } else {
@@ -354,9 +374,9 @@ impl TriangleSpanningCalculator {
 
             (0..self.n)
                 .find_map(|i| {
-                    let e: EdgeIndex = [min(i, pivot), max(i, pivot)];
+                    let e: EdgeIndex = Self::sort_to_edge(i, pivot);
                     if (self.get_triangle_num_with_edge(&e) == 1) && !(&e == open_edge_adj) {
-                        Some([min(i, v), max(i, v)])
+                        Some(Self::sort_to_edge(i, v))
                     } else {
                         None
                     }
@@ -372,6 +392,72 @@ impl TriangleSpanningCalculator {
         Some(candidate)
     }
 
+    fn walk_to_find_adjacent_vertex_with_same_side(
+        &self,
+        pivot: usize,
+        adj_vs_open: [usize; 2],
+        adj_vs_closed: [usize; 2],
+    ) -> usize {
+        // start with `adj_vs_open[0]`
+        let mut i: usize = adj_vs_open[0];
+        let mut i_prev: usize = pivot;
+
+        // find one of the `adj_vs_closed` which is in same side
+        loop {
+            // find next adjacent vertex along the open edge
+            let i_next: usize = (0..self.n)
+                .find(|&j| {
+                    let e: EdgeIndex = Self::sort_to_edge(i, j);
+                    (self.get_triangle_num_with_edge(&e) == 1) && (j != i_prev)
+                })
+                .unwrap();
+            i_prev = i;
+            i = i_next;
+
+            if adj_vs_closed.contains(&i) {
+                break;
+            }
+        }
+
+        i
+    }
+
+    /// For the vertex connected with 2 open edges and 2 closed edges,
+    /// partition the 4 vertices connected with it to 2 groups made of 2 verticies by position.
+    ///
+    /// # Arguments
+    ///
+    /// - `pivot`: The vertex connected with 2 open edges and 2 closed edges
+    /// - `adj_vs_open`: The 2 vertices connected with `pivot` by the open edge
+    /// - `adj_vs_closed`: The 2 vertices connected with `pivot` by the closed edge
+    ///
+    /// # Returns
+    ///
+    /// - `(a, b)`
+    ///   - `a`: The 2 vertices in the same side
+    ///   - `b`: The 2 vertices in the other side
+    fn partition_vertices_by_position(
+        &self,
+        pivot: usize,
+        adj_vs_open: [usize; 2],
+        adj_vs_closed: [usize; 2],
+    ) -> ([usize; 2], [usize; 2]) {
+        // adjacent vertices in same side when remove `e_del`
+        let a: [usize; 2] = {
+            [
+                adj_vs_open[0],
+                self.walk_to_find_adjacent_vertex_with_same_side(pivot, adj_vs_open, adj_vs_closed),
+            ]
+        };
+
+        // the other vertices not `a`
+        let b: [usize; 2] = [
+            Self::filter_from_two(adj_vs_open, |&x| !a.contains(&x)).unwrap(),
+            Self::filter_from_two(adj_vs_closed, |&x| !a.contains(&x)).unwrap(),
+        ];
+        (a, b)
+    }
+
     fn select_new_edge_for_open_triangle_without_open_edge(
         &self,
         edge_del: &EdgeIndex,
@@ -379,77 +465,31 @@ impl TriangleSpanningCalculator {
     ) -> Option<EdgeIndex> {
         let candidate: EdgeIndex = {
             // common point of closed_edges_adj
-            let pivot: usize = closed_edges_adj[0]
-                .iter()
-                .find(|&v| closed_edges_adj[1].contains(v))
-                .copied()
-                .unwrap();
+            let pivot: usize =
+                Self::filter_from_two(closed_edges_adj[0], |&x| closed_edges_adj[1].contains(&x))
+                    .unwrap();
             // adjacent vertices of `pivot`, with open edge between `pivot`
-            let adj_vs_open: Vec<usize> = (0..self.n)
+            let adj_vs_open: [usize; 2] = (0..self.n)
                 .filter(|&i| {
-                    let e: EdgeIndex = [min(i, pivot), max(i, pivot)];
+                    let e: EdgeIndex = Self::sort_to_edge(i, pivot);
                     self.get_triangle_num_with_edge(&e) == 1
                 })
-                .collect();
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
             // adjacent vertices of `pivot`, with closed edge between `pivot`
-            let adj_vs_closed: Vec<usize> = closed_edges_adj
-                .iter()
-                .flatten()
-                .cloned()
-                .filter(|&v| v != pivot)
-                .collect();
-
-            // adjacent vertices in same side when remove `e_del`
-            let a: Vec<usize> = {
-                // start with `adj_vs_open[0]`
-                let mut i: usize = adj_vs_open[0];
-                let mut i_prev: usize = pivot;
-
-                // find one of the `adj_vs_closed` which is in same side
-                loop {
-                    // find next adjacent vertex along the open edge
-                    let i_next: usize = (0..self.n)
-                        .find_map(|j| {
-                            let e: EdgeIndex = [min(j, i), max(j, i)];
-                            if self.get_triangle_num_with_edge(&e) == 1 {
-                                if j == i_prev {
-                                    None
-                                } else {
-                                    Some(j)
-                                }
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap();
-                    i_prev = i;
-                    i = i_next;
-
-                    if adj_vs_closed.contains(&i) {
-                        break;
-                    }
-                }
-                vec![adj_vs_open[0], i]
-            };
-
-            // the other vertices not `a`
-            let b: Vec<usize> = vec![
-                adj_vs_open
-                    .iter()
-                    .find(|v| !a.contains(*v))
-                    .copied()
-                    .unwrap(),
-                adj_vs_closed
-                    .iter()
-                    .find(|v| !a.contains(*v))
-                    .copied()
-                    .unwrap(),
+            let adj_vs_closed: [usize; 2] = [
+                Self::filter_from_two(closed_edges_adj[0], |&x| x != pivot).unwrap(),
+                Self::filter_from_two(closed_edges_adj[1], |&x| x != pivot).unwrap(),
             ];
+
+            let (a, b): ([usize; 2], [usize; 2]) =
+                self.partition_vertices_by_position(pivot, adj_vs_open, adj_vs_closed);
 
             // find shortest edge between `a` and `b`
             a.into_iter()
                 .zip(b.into_iter())
-                .map(|(x, y)| -> EdgeIndex { [min(x, y), max(x, y)] })
+                .map(|(x, y)| Self::sort_to_edge(x, y))
                 .min_by(|e1, e2| {
                     self.edge_lengths[e1[0]][e1[1]]
                         .partial_cmp(&self.edge_lengths[e2[0]][e2[1]])
@@ -469,22 +509,20 @@ impl TriangleSpanningCalculator {
     fn select_new_edge_for_open_triangle(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
         // remaining edges in triangle with `e_del`, classified by open-closed
         let (open_edges_adj, closed_edges_adj): (Vec<EdgeIndex>, Vec<EdgeIndex>) = {
-            let mut o: Vec<EdgeIndex> = Vec::new();
-            let mut c: Vec<EdgeIndex> = Vec::new();
-
-            assert_eq!(self.triangles_in_graphs_on_edges[edge_del].len(), 1);
+            assert_eq!(
+                self.get_triangle_num_with_edge(edge_del),
+                1,
+                "[{:?}]: {:?}",
+                edge_del,
+                self.triangles_in_graphs_on_edges
+                    .get(edge_del)
+                    .unwrap_or(&Vec::new())
+            );
             let t: TriangleIndex = self.triangles_in_graphs_on_edges[edge_del][0];
-            for e in enumerate_edges(&t) {
-                if e == *edge_del {
-                    continue;
-                }
-                if self.triangles_in_graphs_on_edges[&e].len() == 1 {
-                    o.push(e);
-                } else {
-                    c.push(e);
-                }
-            }
-            (o, c)
+            enumerate_edges(&t)
+                .into_iter()
+                .filter(|e| e != edge_del)
+                .partition(|e| self.get_triangle_num_with_edge(e) == 1)
         };
 
         if open_edges_adj.len() == 2 {
@@ -493,9 +531,11 @@ impl TriangleSpanningCalculator {
         }
 
         if open_edges_adj.len() == 1 {
+            dbg!("open-oc");
             self.select_new_edge_for_open_triangle_with_an_open_edge(edge_del, &open_edges_adj[0])
         } else {
             // when no more open edges is in the triangle
+            dbg!("open-cc");
             self.select_new_edge_for_open_triangle_without_open_edge(
                 edge_del,
                 closed_edges_adj.try_into().unwrap(),
@@ -510,15 +550,16 @@ impl TriangleSpanningCalculator {
         // the remove x -- y and connect a -- b.
 
         // vertices connected with the ends of `e_del`
+        dbg!(&edge_del);
         let vs: Vec<usize> = self.triangles_in_graphs_on_edges[edge_del]
             .iter()
             .flatten()
             .cloned()
-            .filter(|p| (p != &edge_del[0]) && (p != &edge_del[1]))
+            .filter(|p| !edge_del.contains(p))
             .collect();
-        assert_eq!(vs.len(), 2);
+        assert_eq!(vs.len(), 2, "vs: {:?}", vs);
 
-        let e = [min(vs[0], vs[1]), max(vs[0], vs[1])];
+        let e = Self::sort_to_edge(vs[0], vs[1]);
         // cannot connect if candidate is longer than `e_del`,
         // or candidate is already connected
         if self.graph.contains(&e) {
@@ -529,6 +570,56 @@ impl TriangleSpanningCalculator {
         }
 
         Some(e)
+    }
+
+    fn swap_edges(&mut self, edge_del: &EdgeIndex, edge_add: &EdgeIndex) {
+        // swap edges
+        self.graph.retain(|e| e != edge_del);
+        self.graph.insert(edge_add.clone());
+        self.open_edges.retain(|e| e != edge_del);
+        self.open_edges.push(edge_add.clone());
+
+        // remove triangles with `e1` from `triangles_in_graphs_on_edges`
+        for t in self.triangles_in_graphs_on_edges[edge_del].clone() {
+            for e in &enumerate_edges(&t) {
+                if e == edge_del {
+                    continue;
+                }
+
+                self.triangles_in_graphs_on_edges
+                    .get_mut(e)
+                    .unwrap()
+                    .retain(|&tt| tt != t);
+            }
+        }
+        self.triangles_in_graphs_on_edges.remove(edge_del);
+
+        // add triangles with `e2` to `triangles_in_graphs_on_edges`
+        for i in 0..self.n {
+            let ee1: EdgeIndex = Self::sort_to_edge(i, edge_add[0]);
+            let ee2: EdgeIndex = Self::sort_to_edge(i, edge_add[1]);
+            if !self.graph.contains(&ee1) || !self.graph.contains(&ee2) {
+                continue;
+            }
+
+            let t: TriangleIndex = Self::sort_to_triangle(i, edge_add[0], edge_add[1]);
+            dbg!(t);
+
+            self.triangles_in_graphs_on_edges
+                .entry(ee1)
+                .or_default()
+                .push(t);
+            self.triangles_in_graphs_on_edges
+                .entry(ee2)
+                .or_default()
+                .push(t);
+            self.triangles_in_graphs_on_edges
+                .entry(edge_add.clone())
+                .or_default()
+                .push(t);
+        }
+
+        dbg!(format!("swaped {:?}, {:?}", &edge_del, &edge_add));
     }
 
     fn optimize_graph_edges(&mut self) -> bool {
@@ -544,82 +635,24 @@ impl TriangleSpanningCalculator {
             })
             .collect();
 
-        let mut is_moved = false;
         for edge_del in &edges_desc {
-            // if `e_del` is open triangle or not
-            let is_open = self.triangles_in_graphs_on_edges[edge_del].len() == 1;
-
-            let maybe_edge_add: Option<EdgeIndex> = if is_open {
-                self.select_new_edge_for_open_triangle(edge_del)
-            } else {
-                self.select_new_edge_for_closed_triangle(edge_del)
-            };
-
-            let Some(edge_add) = maybe_edge_add else {
-                continue;
-            };
-
-            // swap edges
-            self.graph.retain(|e| e != edge_del);
-            self.graph.insert(edge_add.clone());
-            self.open_edges.retain(|e| e != edge_del);
-            self.open_edges.push(edge_add.clone());
-
-            // remove triangles with `e1` from `triangles_in_graphs_on_edges`
-            for t in self.triangles_in_graphs_on_edges[edge_del].clone() {
-                for e in enumerate_edges(&t) {
-                    if &e == edge_del {
-                        continue;
-                    }
-
-                    self.triangles_in_graphs_on_edges
-                        .get_mut(&e)
-                        .unwrap()
-                        .retain(|&tt| tt != t);
+            let maybe_edge_add: Option<EdgeIndex> = {
+                // if `edge_del` is open triangle or not
+                let is_open = self.get_triangle_num_with_edge(edge_del) == 1;
+                if is_open {
+                    self.select_new_edge_for_open_triangle(edge_del)
+                } else {
+                    dbg!("closed");
+                    self.select_new_edge_for_closed_triangle(edge_del)
                 }
+            };
+            if let Some(edge_add) = maybe_edge_add {
+                self.swap_edges(edge_del, &edge_add);
+                return true;
             }
-            self.triangles_in_graphs_on_edges.remove(edge_del);
-
-            // add triangles with `e2` to `triangles_in_graphs_on_edges`
-            for i in 0..self.n {
-                let ee1: EdgeIndex = [min(i, edge_add[0]), max(i, edge_add[0])];
-                let ee2: EdgeIndex = [min(i, edge_add[1]), max(i, edge_add[1])];
-                if !self.graph.contains(&ee1) || !self.graph.contains(&ee2) {
-                    continue;
-                }
-
-                let t: TriangleIndex = [i, edge_add[0], edge_add[1]]
-                    .into_iter()
-                    .sorted()
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap();
-
-                self.triangles_in_graphs_on_edges
-                    .entry(ee1)
-                    .or_default()
-                    .push(t);
-                self.triangles_in_graphs_on_edges
-                    .entry(ee2)
-                    .or_default()
-                    .push(t);
-                self.triangles_in_graphs_on_edges
-                    .entry(edge_add)
-                    .or_default()
-                    .push(t);
-            }
-
-            dbg!(format!("swaped {:?}, {:?}", &edge_del, &edge_add));
-
-            is_moved = true;
-            break;
         }
 
-        // end if no more edges to swap
-        if !is_moved {
-            return false;
-        }
-        true
+        false
     }
 
     /// Calculate the answer
@@ -637,6 +670,8 @@ impl TriangleSpanningCalculator {
 
         self.construct_initial_graph();
 
+        dbg!(&self.graph);
+        dbg!(&self.triangles_in_graphs_on_edges);
         // swap open_edges if graph gets shorter
         loop {
             if !self.optimize_graph_edges() {
@@ -697,7 +732,7 @@ pub(crate) mod test {
     use rand::{thread_rng, Rng};
     use scad_tree::prelude::*;
 
-    /// Create a small spanning triangular mesh from the random points
+    /// Generate random points
     ///
     /// # Arguments
     ///
@@ -705,16 +740,10 @@ pub(crate) mod test {
     ///
     /// # Returns
     ///
-    /// - [`Some(Scad)`]: [`Scad`] object of test 3D object
-    /// - `None`: if `n < 3`
-    pub fn test_small_triangular_spanning(n: usize) -> Option<Scad> {
-        if n < 3 {
-            return None;
-        }
-
+    /// - [`Vec<na::Vector2<f64>>`]: random points
+    fn generate_random_points(n: usize) -> Vec<na::Vector2<f64>> {
         let mut rng = thread_rng();
-        // random points
-        let points: Vec<na::Vector2<f64>> = (0..n)
+        (0..n)
             .map(|_| {
                 (0..5)
                     .map(|_| {
@@ -722,11 +751,10 @@ pub(crate) mod test {
                     })
                     .fold(na::Vector2::zeros(), |a, b| 1.2 * a + b)
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
 
-        // small triangular mesh
-        let edges: Vec<[na::Vector2<f64>; 2]> = small_triangular_spanning(&points);
-
+    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> Scad {
         // pillars on the points
         let pillars = points.into_iter().map(|p| {
             mirror! (
@@ -754,9 +782,33 @@ pub(crate) mod test {
 
         // pillars + edges
         let shapes: Vec<Scad> = pillars.chain(base_edges).collect();
-        Some(Scad {
+        Scad {
             op: ScadOp::Union,
             children: shapes,
-        })
+        }
+    }
+
+    /// Create a small spanning triangular mesh from the random points
+    ///
+    /// # Arguments
+    ///
+    /// - `n`: number of points
+    ///
+    /// # Returns
+    ///
+    /// - [`Some(Scad)`]: [`Scad`] object of test 3D object
+    /// - `None`: if `n < 3`
+    pub fn test_small_triangular_spanning(n: usize) -> Option<Scad> {
+        if n < 3 {
+            return None;
+        }
+
+        // random points
+        let points: Vec<na::Vector2<f64>> = generate_random_points(n);
+
+        // small triangular mesh
+        let edges: Vec<Edge> = small_triangular_spanning(&points);
+
+        Some(generate_test_object(&points, &edges))
     }
 }
