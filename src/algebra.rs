@@ -39,7 +39,7 @@ pub fn min_spanning_by_prim(points: &Vec<na::Vector2<f64>>) -> Vec<Edge> {
     // calculate the edge length
     let edge_lengths: Vec<Vec<f64>> = points
         .iter()
-        .map(|p1| points.iter().map(|p2| p1.metric_distance(&p2)).collect())
+        .map(|p1| points.iter().map(|p2| p1.metric_distance(p2)).collect())
         .collect();
 
     // indicies of the edges in the spanning tree
@@ -157,7 +157,7 @@ impl TriangleSpanningCalculator {
         self.edge_lengths = self
             .points
             .iter()
-            .map(|p1| points.iter().map(|p2| p1.metric_distance(&p2)).collect())
+            .map(|p1| points.iter().map(|p2| p1.metric_distance(p2)).collect())
             .collect();
 
         self.all_triangles = (0..self.n)
@@ -212,7 +212,7 @@ impl TriangleSpanningCalculator {
     /// - `[v0, v1, v2]`: `v0` < `v1` < `v2`
     #[inline]
     fn sort_to_triangle(x: usize, y: usize, z: usize) -> TriangleIndex {
-        let mut v = vec![x, y, z];
+        let mut v = [x, y, z];
         v.sort();
         [v[0], v[1], v[2]]
     }
@@ -229,19 +229,19 @@ impl TriangleSpanningCalculator {
     ///   - `new_vertices`: new vertices to add
     ///   - `next_triangle`: new triangle to add
     fn build_initial_triangle(&mut self) -> (Vec<EdgeIndex>, Vec<usize>, TriangleIndex) {
-        let new_edges: Vec<EdgeIndex>;
-        let new_vertices: Vec<usize>;
-        let next_triangle: TriangleIndex;
+        
+        
+        
         // select the smallest triangle
-        next_triangle = self
+        let next_triangle: TriangleIndex = self
             .all_triangles
             .iter()
             .map(|rc| rc.borrow())
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
             .unwrap()
             .1;
-        new_edges = enumerate_edges(&next_triangle);
-        new_vertices = next_triangle.to_vec();
+        let new_edges: Vec<EdgeIndex> = enumerate_edges(&next_triangle);
+        let new_vertices: Vec<usize> = next_triangle.to_vec();
         // add all new edges
         self.open_edges = new_edges.clone();
 
@@ -260,7 +260,7 @@ impl TriangleSpanningCalculator {
     fn select_shortest_triangle_with_open_edges(&self, visited: &HashSet<usize>) -> TriangleIndex {
         self.open_edges
             .iter()
-            .map(|e| -> Vec<_> {
+            .flat_map(|e| -> Vec<_> {
                 self.all_triangles_on_edges[&[e[0], e[1]]]
                     .iter()
                     .filter(|rc| {
@@ -271,8 +271,7 @@ impl TriangleSpanningCalculator {
                     })
                     .collect::<Vec<_>>()
             })
-            .flatten()
-            .map(|rc| rc.borrow().clone())
+            .map(|rc| *rc.borrow())
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
             .unwrap()
             .1
@@ -303,7 +302,7 @@ impl TriangleSpanningCalculator {
         // select new vertices among the vertices in the new triangle
         let (old_v, new_v): ([usize; 2], usize) = {
             let (o, n): (Vec<usize>, Vec<usize>) =
-                next_triangle.iter().partition(|v| visited.contains(&v));
+                next_triangle.iter().partition(|v| visited.contains(v));
             assert_eq!(n.len(), 1, "n: {:?}", n);
             (o.try_into().unwrap(), n[0])
         };
@@ -347,7 +346,7 @@ impl TriangleSpanningCalculator {
                 self.triangles_in_graphs_on_edges
                     .entry(e)
                     .or_default()
-                    .push(next_triangle.clone());
+                    .push(next_triangle);
             });
 
             self.graph.extend(&new_edges);
@@ -404,7 +403,7 @@ impl TriangleSpanningCalculator {
     }
 
     /// Select the new edge when the edge to delete is open edge,
-    /// and the triangle with the edge has one more open edge. 
+    /// and the triangle with the edge has one more open edge.
     ///
     /// This is the situation as below that a -- b is the edge to delete.
     /// All edges in a -- b -- c -- d is open edge, and c -- d is closed edge.
@@ -442,7 +441,7 @@ impl TriangleSpanningCalculator {
             (0..self.n)
                 .find_map(|i| {
                     let e: EdgeIndex = Self::sort_to_edge(i, pivot);
-                    if (self.get_triangle_num_with_edge(&e) == 1) && !(&e == open_edge_adj) {
+                    if (self.get_triangle_num_with_edge(&e) == 1) && (&e != open_edge_adj) {
                         Some(Self::sort_to_edge(i, v))
                     } else {
                         None
@@ -588,8 +587,8 @@ impl TriangleSpanningCalculator {
     }
 
     /// Select the new edge when the edge to delete is open edge,
-    /// and the triangle with the edge has no other open edge. 
-    /// 
+    /// and the triangle with the edge has no other open edge.
+    ///
     /// This is the situation as below that c -- d is the edge to delete.
     /// `p` is pivot and a -- p, b -- p is open edges, while c -- p, d -- p is closed edges.
     /// When c -- d is cut, one of c, d is connected with a, and the other is connected with b.
@@ -625,7 +624,7 @@ impl TriangleSpanningCalculator {
 
             // find shortest edge between two sides `x`, and `y` around `pivot`
             x.into_iter()
-                .zip(y.into_iter())
+                .zip(y)
                 .map(|(x, y)| Self::sort_to_edge(x, y))
                 .min_by(|e1, e2| {
                     self.edge_lengths[e1[0]][e1[1]]
@@ -643,7 +642,6 @@ impl TriangleSpanningCalculator {
         Some(candidate)
     }
 
-    
     /// Select the new edge when the edge to delete is open edge.
     ///
     /// # Arguments
@@ -702,7 +700,7 @@ impl TriangleSpanningCalculator {
     /// x─y
     /// └b┘
     /// ```
-    /// 
+    ///
     /// # Arguments
     ///
     /// - `edge_del`: The edge to delete
@@ -713,7 +711,6 @@ impl TriangleSpanningCalculator {
     /// - [`None`]: If the candidate is longer than `edge_del`,
     ///   or the candidate is already connected.
     fn select_new_edge_for_closed_edge(&self, edge_del: &EdgeIndex) -> Option<EdgeIndex> {
-
         // vertices connected with the ends of `edge_del`
         let vs: Vec<usize> = self.triangles_in_graphs_on_edges[edge_del]
             .iter()
@@ -782,7 +779,7 @@ impl TriangleSpanningCalculator {
                 .or_default()
                 .push(t);
             self.triangles_in_graphs_on_edges
-                .entry(edge_add.clone())
+                .entry(*edge_add)
                 .or_default()
                 .push(t);
         }
@@ -809,9 +806,9 @@ impl TriangleSpanningCalculator {
     fn refresh_edges(&mut self, edge_del: &EdgeIndex, edge_add: &EdgeIndex) {
         // swap edges
         self.graph.retain(|e| e != edge_del);
-        self.graph.insert(edge_add.clone());
+        self.graph.insert(*edge_add);
         self.open_edges.retain(|e| e != edge_del);
-        self.open_edges.push(edge_add.clone());
+        self.open_edges.push(*edge_add);
 
         self.refresh_triangles(edge_del, edge_add);
         debug_eprintln!("swaped {:?}, {:?}", &edge_del, &edge_add);
@@ -930,7 +927,7 @@ pub(crate) mod test {
     use super::*;
 
     use rand::{thread_rng, Rng};
-    use scad_tree::prelude::*;
+    use scadman::prelude::*;
 
     /// Generate random points
     ///
@@ -964,38 +961,50 @@ pub(crate) mod test {
     /// # Returns
     ///
     /// - [`Scad`]: the object
-    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> Scad {
+    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> Union3D {
         // pillars on the points
-        let pillars = points.into_iter().map(|p| {
-            mirror! (
-                [0., 0., 1.],
-                translate!(
-                    [p.x, p.y, 0.],
-                    cylinder!(h=10., r=4.);
-                );
-            )
+        let pillars = points.iter().map(|p| {
+            Mirror3D::build_with(|mb| {
+                mb.v([0., 0., 1.]).apply_to(Translate3D::build_with(|tb| {
+                    tb.v([p.x, p.y, 0.]).apply_to(Cylinder::build_with(|cb| {
+                        cb.h(10.).r(4.);
+                    }));
+                }));
+            })
         });
 
         // the edges of mesh
-        let base_edges = edges.into_iter().map(|[p1, p2]| {
-            hull! (
-                translate!(
-                    [p1.x, p1.y, 0.],
-                    cylinder!(h=1., r=1.);
-                );
-                translate!(
-                    [p2.x, p2.y, 0.],
-                    cylinder!(h=1., r=1.);
-                );
-            )
+        let base_edges = edges.iter().map(|[p1, p2]| {
+            Hull3D::build_with(|hb| {
+                hb.apply_to(any_scads3d![
+                    Translate3D::build_with(|tb| {
+                        tb.v([p1.x, p1.y, 0.]).apply_to(Cylinder::build_with(|cb| {
+                            cb.h(1.).r(1.);
+                        }));
+                    }),
+                    Translate3D::build_with(|tb| {
+                        tb.v([p2.x, p2.y, 0.]).apply_to(Cylinder::build_with(|cb| {
+                            cb.h(1.).r(1.);
+                        }));
+                    }),
+                ]);
+            })
         });
 
         // pillars + edges
-        let shapes: Vec<Scad> = pillars.chain(base_edges).collect();
-        Scad {
-            op: ScadOp::Union,
-            children: shapes,
-        }
+        let shapes = [
+            pillars
+                .map(|x| Box::new(x) as Box<dyn ScadObject3D>)
+                .collect::<Vec<_>>(),
+            base_edges
+                .map(|x| Box::new(x) as Box<dyn ScadObject3D>)
+                .collect::<Vec<_>>(),
+        ]
+        .concat();
+
+        Union3D::build_with(|ub| {
+            ub.apply_to(shapes);
+        })
     }
 
     /// Create a small spanning triangular mesh from the random points
@@ -1008,7 +1017,7 @@ pub(crate) mod test {
     ///
     /// - [`Some(Scad)`]: [`Scad`] object of test 3D object
     /// - `None`: if `n < 3`
-    pub fn test_small_triangular_spanning(n: usize) -> Option<Scad> {
+    pub fn test_small_triangular_spanning(n: usize) -> Option<Union3D> {
         if n < 3 {
             return None;
         }

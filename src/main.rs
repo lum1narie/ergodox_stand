@@ -1,11 +1,14 @@
 mod algebra;
 
-use std::fs::create_dir;
+use std::{
+    fs::{create_dir, File},
+    io::Write as _,
+};
 
 use itertools::iproduct;
 use nalgebra as na;
 use once_cell::sync::Lazy;
-use scad_tree::prelude::*;
+use scadman::prelude::*;
 
 const BOTTOM_PLATE_HEIGHT: f64 = 3.5;
 const BOTTOM_PLATE_SIZE: f64 = 8.;
@@ -58,26 +61,28 @@ fn euler_angle_degrees(r: &na::Rotation3<f64>) -> [f64; 3] {
 ///
 /// Basic shape of the Ergodox
 #[inline]
-pub fn ergodox_shape(height: f64) -> Scad {
-    mirror!(
-        [0.,1.,0.],
-        union!(
+pub fn ergodox_shape(height: f64) -> Mirror3D {
+    Mirror3D::build_with(|mb| {
+        mb.v([0., 1., 0.]).apply_to(any_scads3d![
             // body
-            cube!([158., 136., height]);
+            Cube::build_with(|cb| {
+                cb.size([158., 136., height]);
+            }),
             // thumb
-            translate!(
-                [
-                158. -  (48. * 64.0_f64.to_radians().sin()),
-                86. -  (48. * 64.0_f64.to_radians().cos()),
-                0.
-                ],
-                rotate!(
-                    [0., 0., 23.],
-                    cube!([96., 70., height]);
-                );
-            );
-        );
-    )
+            Translate3D::build_with(|tb| {
+                tb.v([
+                    158. - (48. * 64.0_f64.to_radians().sin()),
+                    86. - (48. * 64.0_f64.to_radians().cos()),
+                    0.,
+                ])
+                .apply_to(Rotate3D::build_with(|rb| {
+                    rb.deg([0., 0., 23.]).apply_to(Cube::build_with(|cb| {
+                        cb.size([96., 70., height]);
+                    }));
+                }));
+            })
+        ]);
+    })
 }
 
 /// Generate the shape of the top corner foot of Ergodox EZ
@@ -86,11 +91,12 @@ pub fn ergodox_shape(height: f64) -> Scad {
 ///
 /// Shape of the top corner foot
 #[inline]
-fn ergodox_top_corner_foot_shape() -> Scad {
-    translate! (
-        [17., -17.5, -3.],
-        cylinder!(h=3. + SMALL, d=10.);
-    )
+fn ergodox_top_corner_foot_shape() -> Translate3D {
+    Translate3D::build_with(|tb| {
+        tb.v([17., -17.5, -3.]).apply_to(Cylinder::build_with(|cb| {
+            cb.h(3. + SMALL).d(10.);
+        }));
+    })
 }
 
 /// Generate the filled shape of the top corner support
@@ -98,9 +104,9 @@ fn ergodox_top_corner_foot_shape() -> Scad {
 /// # Returns
 ///
 /// Filled shape of the top corner support
-fn top_corner_support_filled() -> Scad {
+fn top_corner_support_filled() -> Polyhedron {
     // generate the vertices
-    let v: Pt3s = {
+    let v: Vec<Point3D> = {
         let verticies_original: Vec<na::Vector3<f64>> = {
             let xs = [-CORNER_SUPPORT_THICKNESS, CORNER_SUPPORT_SIZE];
             let ys = [-CORNER_SUPPORT_SIZE, CORNER_SUPPORT_THICKNESS];
@@ -118,39 +124,28 @@ fn top_corner_support_filled() -> Scad {
             .iter()
             .map(|p| na::Vector3::new(p.x, p.y, 0.))
             .collect();
-        Pt3s::from_pt3s(
-            verticies
-                .into_iter()
-                .chain(base_points.into_iter())
-                .map(|p| Pt3::new(p.x, p.y, p.z))
-                .collect::<Vec<_>>(),
-        )
+        [verticies, base_points].concat()
     };
     // generate the indices of the faces
-    let f: Vec<Vec<u64>> = {
-        let vertical: Vec<Vec<u64>> = [[0, 1], [1, 3], [3, 7], [7, 6], [6, 4], [4, 0]]
+    let f: Vec<Vec<usize>> = {
+        let vertical: Vec<Vec<usize>> = [[0, 1], [1, 3], [3, 7], [7, 6], [6, 4], [4, 0]]
             .into_iter()
-            .map(|[a, b]| -> Vec<u64> { vec![a, b, b + 8, a + 8] })
+            .map(|[a, b]| -> Vec<usize> { vec![a, b, b + 8, a + 8] })
             .collect();
-        let cube_side: Vec<Vec<u64>> = [[0, 1], [1, 3]]
+        let cube_side: Vec<Vec<usize>> = [[0, 1], [1, 3]]
             .into_iter()
-            .map(|[a, b]| -> Vec<u64> { vec![a, a + 4, b + 4, b] })
+            .map(|[a, b]| -> Vec<usize> { vec![a, a + 4, b + 4, b] })
             .collect();
-        let top: Vec<u64> = vec![4, 6, 7, 5];
-        let bottom: Vec<u64> = vec![8, 9, 11, 15, 14, 12];
+        let top: Vec<usize> = vec![4, 6, 7, 5];
+        let bottom: Vec<usize> = vec![8, 9, 11, 15, 14, 12];
 
         // merge all
-        vec![vertical, cube_side, vec![top], vec![bottom]].concat()
+        [vertical, cube_side, vec![top], vec![bottom]].concat()
     };
 
-    polyhedron!(
-        v,
-        Faces::from_faces(
-            f.into_iter()
-                .map(|idx| Indices::from_indices(idx))
-                .collect::<Vec<_>>()
-        )
-    )
+    Polyhedron::build_with(|pb| {
+        pb.points(v).faces(f);
+    })
 }
 
 /// Generate the tip points of the fulcrums
@@ -183,22 +178,28 @@ fn fulcrums_points() -> Vec<na::Vector3<f64>> {
 ///
 /// Fulcrums
 #[inline]
-fn fulcrums() -> Vec<Scad> {
+fn fulcrums() -> Vec<Union3D> {
     fulcrums_points()
         .into_iter()
         .map(|p| {
-            union!(
-                // cylinder body
-                translate!(
-                    [p.x, p.y, 0.],
-                    cylinder!(h=p.z + BASE_HEIGHT, r1=FULCRUM_BUTTOM_R, r2=FULCRUM_TOP_CYLINDER_R);
-                );
-                // sphere on the tip
-                translate!(
-                    [p.x, p.y, p.z + BASE_HEIGHT],
-                    sphere!(r=FULCRUM_TOP_SPHERE_R);
-                );
-            )
+            Union3D::build_with(|ub| {
+                ub.apply_to(any_scads3d![
+                    // cylinder body
+                    Translate3D::build_with(|tb| {
+                        tb.v([p.x, p.y, 0.]).apply_to(Cylinder::build_with(|cb| {
+                            cb.h(p.z + BASE_HEIGHT)
+                                .r([FULCRUM_BUTTOM_R, FULCRUM_TOP_CYLINDER_R]);
+                        }));
+                    }),
+                    // sphere on the tip
+                    Translate3D::build_with(|tb| {
+                        tb.v([p.x, p.y, p.z + BASE_HEIGHT])
+                            .apply_to(Sphere::build_with(|sb| {
+                                sb.r(FULCRUM_TOP_SPHERE_R);
+                            }));
+                    })
+                ]);
+            })
         })
         .collect()
 }
@@ -213,30 +214,34 @@ fn fulcrums() -> Vec<Scad> {
 ///
 /// [`Vec<Scad>`] include edges to connect the points
 #[inline]
-fn connect_points(points: &Vec<na::Vector2<f64>>) -> Vec<Scad> {
+fn connect_points(points: &Vec<na::Vector2<f64>>) -> Vec<Hull3D> {
     // edges to connect all of `points` with triangle
-    let edges: Vec<[na::Vector2<f64>; 2]> = algebra::small_triangular_spanning(&points);
+    let edges: Vec<[na::Vector2<f64>; 2]> = algebra::small_triangular_spanning(points);
 
     edges
         .into_iter()
         .map(|[p1, p2]| {
             // connecting edge between the two points
-            hull!(
-                linear_extrude!(
-                    BOTTOM_PLATE_HEIGHT,
-                    translate!(
-                        [p1.x, p1.y, 0.],
-                        circle!(d=BOTTOM_PLATE_SIZE);
-                    );
-                );
-                linear_extrude!(
-                    BOTTOM_PLATE_HEIGHT,
-                    translate!(
-                        [p2.x, p2.y, 0.],
-                        circle!(d=BOTTOM_PLATE_SIZE);
-                    );
-                );
-            )
+            Hull3D::build_with(|hb| {
+                hb.apply_to(any_scads3d![
+                    LinearExtrude::build_with(|lb| {
+                        lb.height(BOTTOM_PLATE_HEIGHT)
+                            .apply_to(Translate2D::build_with(|tb| {
+                                tb.v(p1).apply_to(Circle::build_with(|cb| {
+                                    cb.d(BOTTOM_PLATE_SIZE);
+                                }));
+                            }));
+                    }),
+                    LinearExtrude::build_with(|lb| {
+                        lb.height(BOTTOM_PLATE_HEIGHT)
+                            .apply_to(Translate2D::build_with(|tb| {
+                                tb.v(p2).apply_to(Circle::build_with(|cb| {
+                                    cb.d(BOTTOM_PLATE_SIZE);
+                                }));
+                            }));
+                    }),
+                ]);
+            })
         })
         .collect()
 }
@@ -246,67 +251,81 @@ fn connect_points(points: &Vec<na::Vector2<f64>>) -> Vec<Scad> {
 /// # Returns
 ///
 /// Ergodox stand for the left hand
-pub fn ergodox_stand_left() -> Scad {
+pub fn ergodox_stand_left() -> Difference3D {
     let rot_matrix = rot_matrix();
-    let [rot_x, rot_y, rot_z] = euler_angle_degrees(&rot_matrix);
+    let rot_ed = euler_angle_degrees(&rot_matrix);
 
     // shape of the Ergodox to cut the stand
-    let ergodox_rotated = rotate!(
-        [rot_x, rot_y, rot_z],
-        union! (
-            ergodox_shape(100.);
-            ergodox_top_corner_foot_shape();
-        );
-    );
+    let ergodox_rotated = Rotate3D::build_with(|rb| {
+        rb.deg(rot_ed).apply_to(Union3D::build_with(|ub| {
+            ub.apply_to(any_scads3d![
+                ergodox_shape(100.),
+                ergodox_top_corner_foot_shape(),
+            ]);
+        }));
+    });
 
     // supporting shapes
-    let support_shapes: Vec<Scad> = vec![vec![top_corner_support_filled()], fulcrums()].concat();
+    let support_shapes: Vec<Box<dyn ScadObject3D>> = [
+        any_scads3d![top_corner_support_filled()],
+        fulcrums()
+            .into_iter()
+            .map(|x| Box::new(x) as Box<dyn ScadObject3D>)
+            .collect(),
+    ]
+    .concat();
 
     // base plate
     let base = {
         // base points to connect
         let base_points: Vec<na::Vector2<f64>> = {
             // base of supports
-            let ps = vec![
-                vec![na::Vector2::new(0., 0.)],
+            let ps = [vec![na::Vector2::new(0., 0.)],
                 fulcrums_points()
                     .into_iter()
                     .map(|p| na::Vector2::new(p.x, p.y))
-                    .collect(),
-            ]
+                    .collect()]
             .concat();
 
-            vec![
-                ps.clone(),
+            [ps.clone(),
                 // the weighted average of the `ps`
-                vec![ps.iter().fold(na::Vector2::zeros(), |a, b| a + b) / (ps.len() as f64)],
-            ]
+                vec![ps.iter().fold(na::Vector2::zeros(), |a, b| a + b) / (ps.len() as f64)]]
             .concat()
             // ps
         };
 
-        let base_objs: Vec<Scad> = connect_points(&base_points);
+        let base_objs: Vec<Hull3D> = connect_points(&base_points);
 
-        Scad {
-            op: ScadOp::Union,
-            children: base_objs,
-        }
+        Union3D::build_with(|ub| {
+            ub.apply_to(
+                base_objs
+                    .into_iter()
+                    .map(|x| Box::new(x) as Box<dyn ScadObject3D>)
+                    .collect::<Vec<_>>(),
+            );
+        })
     };
 
     // stand without cut
-    let filled = Scad {
-        op: ScadOp::Union,
-        children: vec![support_shapes, vec![base]].concat(),
-    };
+    let filled = Union3D::build_with(|ub| {
+        ub.apply_to(
+            [
+                support_shapes,
+                vec![Box::new(base) as Box<dyn ScadObject3D>],
+            ]
+            .concat(),
+        );
+    });
 
     // cut with Ergodox shape
-    difference!(
-        filled;
-        translate!(
-            [0.,0.,BASE_HEIGHT],
-            ergodox_rotated;
-        );
-    )
+    Difference3D::build_with(|db| {
+        db.apply_to(any_scads3d![
+            filled,
+            Translate3D::build_with(|tb| {
+                tb.v([0., 0., BASE_HEIGHT]).apply_to(ergodox_rotated);
+            }),
+        ]);
+    })
 }
 
 /// Generate the Ergodox stand for the right hand
@@ -315,11 +334,10 @@ pub fn ergodox_stand_left() -> Scad {
 ///
 /// Ergodox stand for the right hand
 #[inline]
-fn ergodox_stand_right() -> Scad {
-    mirror!(
-        [1., 0., 0.],
-        ergodox_stand_left();
-    )
+fn ergodox_stand_right() -> Mirror3D {
+    Mirror3D::build_with(|mb| {
+        mb.v([1., 0., 0.]).apply_to(ergodox_stand_left());
+    })
 }
 
 fn main() {
@@ -327,9 +345,18 @@ fn main() {
     let er = ergodox_stand_right();
 
     let _ = create_dir("things");
-    el.save("things/ergodox_stand_left.scad");
-    er.save("things/ergodox_stand_right.scad");
+    {
+        let mut f = File::create("things/ergodox_stand_left.scad").unwrap();
+        f.write_all(el.to_code().as_bytes()).unwrap();
+    }
+    {
+        let mut f = File::create("things/ergodox_stand_right.scad").unwrap();
+        f.write_all(er.to_code().as_bytes()).unwrap();
+    }
 
     let tri_test = algebra::test::test_small_triangular_spanning(30).unwrap();
-    tri_test.save("things/tri_test.scad");
+    {
+        let mut f = File::create("things/tri_test.scad").unwrap();
+        f.write_all(tri_test.to_code().as_bytes()).unwrap();
+    }
 }
