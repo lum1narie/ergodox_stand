@@ -229,9 +229,6 @@ impl TriangleSpanningCalculator {
     ///   - `new_vertices`: new vertices to add
     ///   - `next_triangle`: new triangle to add
     fn build_initial_triangle(&mut self) -> (Vec<EdgeIndex>, Vec<usize>, TriangleIndex) {
-        
-        
-        
         // select the smallest triangle
         let next_triangle: TriangleIndex = self
             .all_triangles
@@ -961,46 +958,44 @@ pub(crate) mod test {
     /// # Returns
     ///
     /// - [`Scad`]: the object
-    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> Union3D {
+    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> ScadObject3D {
         // pillars on the points
-        let pillars = points.iter().map(|p| {
-            Mirror3D::build_with(|mb| {
-                mb.v([0., 0., 1.]).apply_to(Translate3D::build_with(|tb| {
-                    tb.v([p.x, p.y, 0.]).apply_to(Cylinder::build_with(|cb| {
-                        cb.h(10.).r(4.);
-                    }));
-                }));
+        let pillars = points
+            .iter()
+            .map(|p| {
+                Mirror3D::build_with(|mb| {
+                    mb.v([0., 0., 1.]).apply_to([Translate3D::build_with(|tb| {
+                        tb.v([p.x, p.y, 0.]).apply_to([Cylinder::build_with(|cb| {
+                            cb.h(10.).r(4.);
+                        })]);
+                    })]);
+                })
             })
-        });
+            .collect::<Vec<_>>();
 
         // the edges of mesh
-        let base_edges = edges.iter().map(|[p1, p2]| {
-            Hull3D::build_with(|hb| {
-                hb.apply_to(any_scads3d![
-                    Translate3D::build_with(|tb| {
-                        tb.v([p1.x, p1.y, 0.]).apply_to(Cylinder::build_with(|cb| {
-                            cb.h(1.).r(1.);
-                        }));
-                    }),
-                    Translate3D::build_with(|tb| {
-                        tb.v([p2.x, p2.y, 0.]).apply_to(Cylinder::build_with(|cb| {
-                            cb.h(1.).r(1.);
-                        }));
-                    }),
-                ]);
+        let base_edges = edges
+            .iter()
+            .map(|[p1, p2]| {
+                Hull3D::build_with(|hb| {
+                    hb.apply_to([
+                        Translate3D::build_with(|tb| {
+                            tb.v([p1.x, p1.y, 0.]).apply_to([Cylinder::build_with(|cb| {
+                                cb.h(1.).r(1.);
+                            })]);
+                        }),
+                        Translate3D::build_with(|tb| {
+                            tb.v([p2.x, p2.y, 0.]).apply_to([Cylinder::build_with(|cb| {
+                                cb.h(1.).r(1.);
+                            })]);
+                        }),
+                    ]);
+                })
             })
-        });
+            .collect::<Vec<_>>();
 
         // pillars + edges
-        let shapes = [
-            pillars
-                .map(|x| Box::new(x) as Box<dyn ScadObject3D>)
-                .collect::<Vec<_>>(),
-            base_edges
-                .map(|x| Box::new(x) as Box<dyn ScadObject3D>)
-                .collect::<Vec<_>>(),
-        ]
-        .concat();
+        let shapes = [pillars, base_edges].concat();
 
         Union3D::build_with(|ub| {
             ub.apply_to(shapes);
@@ -1017,7 +1012,7 @@ pub(crate) mod test {
     ///
     /// - [`Some(Scad)`]: [`Scad`] object of test 3D object
     /// - `None`: if `n < 3`
-    pub fn test_small_triangular_spanning(n: usize) -> Option<Union3D> {
+    pub fn test_small_triangular_spanning(n: usize) -> Option<ScadObject3D> {
         if n < 3 {
             return None;
         }
