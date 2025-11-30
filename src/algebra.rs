@@ -958,18 +958,24 @@ pub(crate) mod test {
     /// # Returns
     ///
     /// - [`Scad`]: the object
-    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> ScadObject3D {
+    fn generate_test_object(points: &Vec<na::Vector2<f64>>, edges: &Vec<Edge>) -> ScadObject {
         // pillars on the points
         let pillars = points
             .iter()
             .map(|p| {
-                Mirror3D::build_with(|mb| {
-                    mb.v([0., 0., 1.]).apply_to([Translate3D::build_with(|tb| {
-                        tb.v([p.x, p.y, 0.]).apply_to([Cylinder::build_with(|cb| {
+                modifier_3d(
+                    Mirror3D::build_with(|mb| {
+                        mb.v([0., 0., 1.]);
+                    }),
+                    modifier_3d(
+                        Translate3D::build_with(|tb| {
+                            tb.v([p.x, p.y, 0.]);
+                        }),
+                        primitive_3d(Cylinder::build_with(|cb| {
                             cb.h(10.).r(4.);
-                        })]);
-                    })]);
-                })
+                        })),
+                    ),
+                )
             })
             .collect::<Vec<_>>();
 
@@ -977,29 +983,34 @@ pub(crate) mod test {
         let base_edges = edges
             .iter()
             .map(|[p1, p2]| {
-                Hull3D::build_with(|hb| {
-                    hb.apply_to([
-                        Translate3D::build_with(|tb| {
-                            tb.v([p1.x, p1.y, 0.]).apply_to([Cylinder::build_with(|cb| {
+                modifier_3d(
+                    Hull::new(),
+                    block_3d(&[
+                        modifier_3d(
+                            Translate3D::build_with(|tb| {
+                                tb.v([p1.x, p1.y, 0.]);
+                            }),
+                            primitive_3d(Cylinder::build_with(|cb| {
                                 cb.h(1.).r(1.);
-                            })]);
-                        }),
-                        Translate3D::build_with(|tb| {
-                            tb.v([p2.x, p2.y, 0.]).apply_to([Cylinder::build_with(|cb| {
+                            })),
+                        ),
+                        modifier_3d(
+                            Translate3D::build_with(|tb| {
+                                tb.v([p2.x, p2.y, 0.]);
+                            }),
+                            primitive_3d(Cylinder::build_with(|cb| {
                                 cb.h(1.).r(1.);
-                            })]);
-                        }),
-                    ]);
-                })
+                            })),
+                        ),
+                    ]),
+                )
             })
             .collect::<Vec<_>>();
 
         // pillars + edges
         let shapes = [pillars, base_edges].concat();
 
-        Union3D::build_with(|ub| {
-            ub.apply_to(shapes);
-        })
+        modifier_3d(Union::new(), block_3d(&shapes))
     }
 
     /// Create a small spanning triangular mesh from the random points
@@ -1012,7 +1023,7 @@ pub(crate) mod test {
     ///
     /// - [`Some(Scad)`]: [`Scad`] object of test 3D object
     /// - `None`: if `n < 3`
-    pub fn test_small_triangular_spanning(n: usize) -> Option<ScadObject3D> {
+    pub fn test_small_triangular_spanning(n: usize) -> Option<ScadObject> {
         if n < 3 {
             return None;
         }
