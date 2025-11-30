@@ -95,7 +95,7 @@ fn ergodox_top_corner_foot_shape() -> ScadObject3D {
     Translate3D::build_with(|tb| {
         tb.v([17., -17.5, -3.])
             .apply_to([Cylinder::build_with(|cb| {
-                cb.h(3. + SMALL).d(10.);
+                cb.h(3.2 + SMALL).d(10.3);
             })]);
     })
 }
