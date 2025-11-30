@@ -1,0 +1,15 @@
+[config]
+skip_core_tasks = true
+
+[tasks.default]
+dependencies = ["run"]
+
+[tasks.run]
+script_runner = "bash"
+script = '''
+cargo run -r
+for s in $(find things/ -type f -name '*.scad'); do
+    openscad -o ${s%.scad}.stl $s
+done
+'''
+
